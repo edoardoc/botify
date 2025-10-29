@@ -28,10 +28,15 @@ Reusable Telegram ↔ Codex bridge that can be dropped into any repository. The 
 
 Once the process is running, chat with your Telegram bot. Any non-command message is forwarded to Codex and the response is streamed back as formatted text.
 
-## Project Integration
-- **As a Git submodule**: move the `botify/` folder into its own repository, then add it as a submodule wherever you need per-project bridges. Keeping it as a submodule makes it easy to fork or tailor the bridge for project-specific workflows—custom Codex prompts, alternative launch commands, or bespoke logging—while still reusing the shared core.
-- **As a dependency**: publish the package (e.g., to a private registry) and add it to your project via `npm install`.
-- **Custom scripts**: import the `TelegramCodexBridge` and `loadConfigFromEnv` helpers to embed the bridge in bespoke automation.
+## Git Submodule Integration
+Extract this folder into its own Git remote, then link it into downstream projects as a submodule:
+1. `git submodule add <botify-repo-url> tools/botify`
+2. `git submodule update --init --recursive`
+3. Run `npm install` inside the submodule and configure Codex/Telegram environment variables at the host project level.
+This keeps the bridge reusable while letting each consumer pin a specific revision or maintain project-specific branches for prompts, logging, or deployment tweaks.
+
+## Bot Launcher Script
+From the host project root, run `./botify/scripts/start-bot.sh` to load `.env`, boot the compiled bridge, and mirror all output to `./logs/botify.log` (created automatically). Override the log destination with `BOTIFY_LOG_PATH=/custom/path.log` if you prefer a different location.
 
 ```ts
 import { loadConfigFromEnv, TelegramCodexBridge } from 'botify';
