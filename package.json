@@ -1,0 +1,38 @@
+{
+  "name": "botify",
+  "version": "0.1.0",
+  "description": "Reusable Telegram ↔ Codex bridge utilities.",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./cli": "./dist/cli.js"
+  },
+  "bin": {
+    "botify": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rimraf dist",
+    "lint": "tsc --noEmit -p tsconfig.json"
+  },
+  "keywords": [
+    "codex",
+    "telegram",
+    "automation",
+    "bot"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
