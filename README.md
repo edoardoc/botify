@@ -64,11 +64,12 @@ All options are read from environment variables and have sensible defaults align
 | `CODEX_EXIT_LOG_LINES` | Buffered lines from Codex logs for crash reports | `40` |
 | `CODEX_OUTPUT_CHUNK` | Telegram message chunk size | `3500` |
 
-## Telegram Setup Checklist
-1. Using `@BotFather`, `/newbot` to create a bot and record the token.
-2. Drop the bot into a private chat (or group) and message it once; fetch the chat id via `curl https://api.telegram.org/bot<token>/getUpdates`.
-3. Store both values in the `.env`.
-4. Optionally disable privacy (so the bot can see group messages) using `/setprivacy`.
+## Telegram Keys
+1. DM `@BotFather`, run `/newbot`, follow the prompts, and copy the resulting `TELEGRAM_BOT_TOKEN`.
+2. Start a chat with the bot (or add it to a group) and send a dummy message.
+3. Grab the chat identifier with `curl "https://api.telegram.org/bot<token>/getUpdates"` or `@userinfobot`; the numeric `id` becomes `TELEGRAM_CHAT_ID`.
+4. Drop both values into `.env` or export them in your shell before launching the bridge.
+5. Optional: `/setprivacy` in `@BotFather` if the bot needs to see all group messages.
 
 ## Codex Setup Checklist
 - Ensure the Codex CLI is installed and on the PATH of the user running the bridge.
