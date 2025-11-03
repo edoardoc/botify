@@ -17,37 +17,37 @@ Extract this folder into its own Git remote, then link it into downstream projec
 3. make sure your `.gitignore` includes `botify/`
 
 ### Env and activations
-1. `npm install` inside the `botify/` folder.
-2. Copy `.env.example` to `.env` and fill in the required variables:
+1. Copy `.env.example` to `.env` and fill in the required variables:
    - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are mandatory.
    - Optional Codex overrides (command, sandbox, approval policy, etc.) can stay commented out.
-3. Build the TypeScript sources (optional for `ts-node` users):
-   ```bash
-   npm run build
-   ```
-4. Launch the bridge:
-   ```bash
-   node dist/cli.js
-   ```
-   or, after adding `botify/dist` to your path, simply run:
-   ```bash
-   npx botify
-   ```
 
 Once the process is running, chat with your Telegram bot. Any non-command message is forwarded to Codex and the response is streamed back as formatted text.
 
-
 ## Bot Launcher Script
 From the host project root, run `./botify/scripts/start-bot.sh` to load `.env`, boot the compiled bridge, and mirror all output to `./logs/botify.log` (created automatically). Override the log destination with `BOTIFY_LOG_PATH=/custom/path.log` if you prefer a different location.
+Before interacting with the bot make sure it was invoked from the host directory (just ask it to list the folder)
 
-```ts
-import { loadConfigFromEnv, TelegramCodexBridge } from 'botify';
+### Codes Authorization
+Codex will create a `<host_project>/.codex_mcp_home/` where a file `auth.json` should be present (after codex login that file is created)
 
-const config = loadConfigFromEnv();
-const bridge = new TelegramCodexBridge(config);
-await bridge.start();
-// keep the process alive; call bridge.stop() on shutdown
-```
+## Obtaining Telegram Keys
+1. DM `@BotFather`, run `/newbot`, follow the prompts, and copy the resulting `TELEGRAM_BOT_TOKEN`.
+2. Start a chat with the bot (or add it to a group) and send a dummy message.
+3. Grab the chat identifier with `curl "https://api.telegram.org/bot<token>/getUpdates"` or `@userinfobot`; the numeric `id` becomes `TELEGRAM_CHAT_ID`.
+4. Drop both values into `.env` or export them in your shell before launching the bridge.
+5. Optional: `/setprivacy` in `@BotFather` if the bot needs to see all group messages.
+
+### Finding your `TELEGRAM_CHAT_ID`
+1. Replace `<token>` with your bot token and run:
+   ```bash
+   curl "https://api.telegram.org/bot<token>/getUpdates"
+   ```
+2. Locate the most recent `message.chat.id` in the JSON response. That value (often negative for groups) is the `TELEGRAM_CHAT_ID`.
+3. Optionally, pipe the result through `jq` to extract the id quickly:
+   ```bash
+   curl "https://api.telegram.org/bot<token>/getUpdates" | jq '.result[0].message.chat.id'
+   ```
+4. If you do not see the chat listed, send another message to the bot and re-run the command; Telegram only returns chats with recent activity.
 
 ## Configuration Reference
 All options are read from environment variables and have sensible defaults aligned with the original bridge:
@@ -70,22 +70,3 @@ All options are read from environment variables and have sensible defaults align
 | `CODEX_RPC_TIMEOUT_MS` | RPC timeout in milliseconds (`0` disables) | `900000` |
 | `CODEX_EXIT_LOG_LINES` | Buffered lines from Codex logs for crash reports | `40` |
 | `CODEX_OUTPUT_CHUNK` | Telegram message chunk size | `3500` |
-
-## Telegram Keys
-1. DM `@BotFather`, run `/newbot`, follow the prompts, and copy the resulting `TELEGRAM_BOT_TOKEN`.
-2. Start a chat with the bot (or add it to a group) and send a dummy message.
-3. Grab the chat identifier with `curl "https://api.telegram.org/bot<token>/getUpdates"` or `@userinfobot`; the numeric `id` becomes `TELEGRAM_CHAT_ID`.
-4. Drop both values into `.env` or export them in your shell before launching the bridge.
-5. Optional: `/setprivacy` in `@BotFather` if the bot needs to see all group messages.
-
-## Codex Setup Checklist
-- Ensure the Codex CLI is installed and on the PATH of the user running the bridge.
-- Provide any required credentials or MCP configuration inside `CODEX_HOME`.
-- Tune sandbox/approval policy according to the target project; defaults mirror a non-interactive Codex bot.
-
-## Development
-- `npm run build` compiles sources to `dist/`.
-- `npm run lint` performs a type-check-only run.
-- `npm run clean` removes the build artifacts.
-
-Feel free to extend the module with additional adapters (e.g., Slack, Discord) by following the same pattern inside `src/`.
