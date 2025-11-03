@@ -60,7 +60,7 @@ All options are read from environment variables and have sensible defaults align
 | `CODEX_COMMAND` | Command used to launch the Codex MCP server | `codex mcp-server` |
 | `CODEX_CWD` | Working directory for Codex | current working directory |
 | `CODEX_HOME` | Dedicated Codex home directory | `<CODEX_CWD>/.codex_mcp_home` |
-| `CODEX_SANDBOX` | Sandbox mode forwarded to Codex | `workspace-write` |
+| `CODEX_SANDBOX` | Sandbox mode forwarded to Codex | `danger-full-access` |
 | `CODEX_APPROVAL_POLICY` | Approval policy forwarded to Codex | `never` |
 | `CODEX_PROFILE` | Optional Codex profile | unset |
 | `CODEX_MODEL` | Optional Codex model override | unset |

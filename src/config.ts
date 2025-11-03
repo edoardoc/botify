@@ -21,7 +21,7 @@ export function loadConfigFromEnv(options: LoadConfigOptions = {}): BotifyConfig
   const codexHome =
     env.CODEX_HOME?.trim() ||
     path.join(codexCwd, '.codex_mcp_home');
-  const sandboxMode = env.CODEX_SANDBOX?.trim() || 'workspace-write';
+  const sandboxMode = env.CODEX_SANDBOX?.trim() || 'danger-full-access';
   const approvalPolicy = env.CODEX_APPROVAL_POLICY?.trim() || 'never';
   const profile = blankToUndefined(env.CODEX_PROFILE);
   const model = blankToUndefined(env.CODEX_MODEL);
