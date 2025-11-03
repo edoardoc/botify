@@ -9,6 +9,14 @@ Reusable Telegram ↔ Codex bridge that can be dropped into any repository. The 
 - Graceful shutdown and rich status/help commands exposed via Telegram.
 
 ## Quick Start
+
+### Git Submodule Integration
+Extract this folder into its own Git remote, then link it into downstream projects as a submodule:
+1. `git submodule add <botify-repo-url>`
+2. `git submodule update --init --recursive` (and this can be run anytime you want to pull botify changes)
+3. make sure your `.gitignore` includes `botify/`
+
+### Env and activations
 1. `npm install` inside the `botify/` folder.
 2. Copy `.env.example` to `.env` and fill in the required variables:
    - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are mandatory.
@@ -28,12 +36,6 @@ Reusable Telegram ↔ Codex bridge that can be dropped into any repository. The 
 
 Once the process is running, chat with your Telegram bot. Any non-command message is forwarded to Codex and the response is streamed back as formatted text.
 
-## Git Submodule Integration
-Extract this folder into its own Git remote, then link it into downstream projects as a submodule:
-1. `git submodule add <botify-repo-url> tools/botify`
-2. `git submodule update --init --recursive`
-3. Run `npm install` inside the submodule and configure Codex/Telegram environment variables at the host project level.
-This keeps the bridge reusable while letting each consumer pin a specific revision or maintain project-specific branches for prompts, logging, or deployment tweaks.
 
 ## Bot Launcher Script
 From the host project root, run `./botify/scripts/start-bot.sh` to load `.env`, boot the compiled bridge, and mirror all output to `./logs/botify.log` (created automatically). Override the log destination with `BOTIFY_LOG_PATH=/custom/path.log` if you prefer a different location.
