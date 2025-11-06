@@ -3,3 +3,4 @@ dist
 *.log
 .env
 .codex_mcp_home/
+uploads/

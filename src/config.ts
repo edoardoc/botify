@@ -23,6 +23,9 @@ export function loadConfigFromEnv(options: LoadConfigOptions = {}): BotifyConfig
     path.join(codexCwd, '.codex_mcp_home');
   const sandboxMode = env.CODEX_SANDBOX?.trim() || 'danger-full-access';
   const approvalPolicy = env.CODEX_APPROVAL_POLICY?.trim() || 'never';
+  const attachmentsDir =
+    env.BOTIFY_ATTACHMENTS_DIR?.trim() ||
+    path.join(codexCwd, 'uploads');
   const profile = blankToUndefined(env.CODEX_PROFILE);
   const model = blankToUndefined(env.CODEX_MODEL);
   const includePlanTool = toOptionalBool(env.CODEX_INCLUDE_PLAN_TOOL);
@@ -41,6 +44,7 @@ export function loadConfigFromEnv(options: LoadConfigOptions = {}): BotifyConfig
     codexHome,
     sandboxMode,
     approvalPolicy,
+    attachmentsDir,
     profile,
     model,
     includePlanTool,

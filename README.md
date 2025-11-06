@@ -62,6 +62,7 @@ All options are read from environment variables and have sensible defaults align
 | `CODEX_HOME` | Dedicated Codex home directory | `<CODEX_CWD>/.codex_mcp_home` |
 | `CODEX_SANDBOX` | Sandbox mode forwarded to Codex | `danger-full-access` |
 | `CODEX_APPROVAL_POLICY` | Approval policy forwarded to Codex | `never` |
+| `BOTIFY_ATTACHMENTS_DIR` | Directory where incoming Telegram files are saved | `<CODEX_CWD>/uploads` |
 | `CODEX_PROFILE` | Optional Codex profile | unset |
 | `CODEX_MODEL` | Optional Codex model override | unset |
 | `CODEX_INCLUDE_PLAN_TOOL` | Enable/disable plan tool | unset |
@@ -70,3 +71,8 @@ All options are read from environment variables and have sensible defaults align
 | `CODEX_RPC_TIMEOUT_MS` | RPC timeout in milliseconds (`0` disables) | `900000` |
 | `CODEX_EXIT_LOG_LINES` | Buffered lines from Codex logs for crash reports | `40` |
 | `CODEX_OUTPUT_CHUNK` | Telegram message chunk size | `3500` |
+
+### Attachment Handling
+- Any Telegram document or photo sent to the bot is downloaded immediately and stored inside `BOTIFY_ATTACHMENTS_DIR` (default `./uploads` relative to the Codex CWD).
+- Add this directory to your `.gitignore` (already ignored by default) so large binaries never end up in version control.
+- When a file is saved, the bot sends back the relative path so you can reference it in follow-up prompts (e.g. “use `uploads/photo-abc123.jpg` as the hero image”).
