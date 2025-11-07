@@ -1,6 +1,6 @@
 # Botify
 
-Reusable Telegram ↔ Codex bridge that can be dropped into any repository. The package exposes a programmatic API plus a small CLI that reads environment variables (or a `.env` file) and mirrors the behaviour of the existing `scripts/telegram_bot.js` bridge.
+Reusable Telegram ↔ Codex bridge that can be dropped into any repository. 
 
 ## Features
 - Long-polling Telegram bot locked to a single chat.
@@ -12,9 +12,7 @@ Reusable Telegram ↔ Codex bridge that can be dropped into any repository. The 
 
 ### Git Submodule Integration
 Extract this folder into its own Git remote, then link it into downstream projects as a submodule:
-1. `git submodule add <botify-repo-url>`
-2. `git submodule update --init --recursive` (and this can be run anytime you want to pull botify changes)
-3. make sure your `.gitignore` includes `botify/`
+`git submodule add git@github.com:edoardoc/botify.git`
 
 ### Env and activations
 1. Copy `.env.example` to `.env` and fill in the required variables:
