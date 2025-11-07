@@ -9,10 +9,15 @@ Reusable Telegram ↔ Codex bridge that can be dropped into any repository.
 - Graceful shutdown and rich status/help commands exposed via Telegram.
 
 ## Quick Start
+1. `git submodule add git@github.com:edoardoc/botify.git`
+2. do a `npm install` inside the `botify/` folder
+3. make sure you have a `<host_project>/.codex_mcp_home/auth.json` with something valid inside
+4. launch botify from the <host_project> folder with `./botify/scripts/start-bot.sh`
+
+## Details
 
 ### Git Submodule Integration
-Extract this folder into its own Git remote, then link it into downstream projects as a submodule:
-`git submodule add git@github.com:edoardoc/botify.git`
+Inside the host project, add a submodule: `git submodule add git@github.com:edoardoc/botify.git`
 
 ### Env and activations
 1. Copy `.env.example` to `.env` and fill in the required variables:
