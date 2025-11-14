@@ -7,6 +7,7 @@ export interface BotifyConfig {
   codexHome: string;
   sandboxMode?: string;
   approvalPolicy?: string;
+  attachmentsDir: string;
   profile?: string;
   model?: string;
   includePlanTool?: boolean;

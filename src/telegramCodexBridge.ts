@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import https from 'node:https';
 import fs from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline';
 import { BotifyConfig, BridgeLogger } from './types.js';
 
@@ -25,6 +26,12 @@ interface CodexMessage {
   params?: Record<string, any>;
   result?: any;
   error?: { code?: number; message?: string };
+}
+
+interface AttachmentDescriptor {
+  fileId: string;
+  kind: 'document' | 'photo';
+  suggestedName?: string;
 }
 
 export class TelegramCodexBridge {
@@ -57,6 +64,7 @@ export class TelegramCodexBridge {
     }
     this.stopRequested = false;
     ensureDirectory(this.config.codexHome);
+    ensureDirectory(this.config.attachmentsDir);
     const codexEnv = {
       ...process.env,
       CODEX_HOME: this.config.codexHome,
@@ -338,7 +346,7 @@ export class TelegramCodexBridge {
 
   private handleUpdate(update: any): void {
     const message = update.message || update.edited_message;
-    if (!message || typeof message.text !== 'string') {
+    if (!message) {
       return;
     }
     if (String(message.chat.id) !== String(this.config.chatId)) {
@@ -349,7 +357,25 @@ export class TelegramCodexBridge {
       return;
     }
 
-    const trimmed = message.text.trim();
+    const attachments = this.extractAttachmentDescriptors(message);
+    if (attachments.length) {
+      void this.handleFileAttachments(attachments).catch((err) => {
+        this.logger.error(`Attachment processing error: ${err.message}`);
+      });
+    }
+
+    const promptText =
+      typeof message.text === 'string'
+        ? message.text
+        : typeof message.caption === 'string'
+          ? message.caption
+          : undefined;
+
+    if (promptText === undefined) {
+      return;
+    }
+
+    const trimmed = promptText.trim();
     if (trimmed === '/help') {
       void this.sendText(
         [
@@ -399,7 +425,7 @@ export class TelegramCodexBridge {
     }
 
     this.messageQueue.push({
-      text: message.text,
+      text: promptText,
       metadata: { from: message.from?.username || message.from?.first_name || 'user' },
     });
     this.processQueue();
@@ -530,6 +556,125 @@ export class TelegramCodexBridge {
       this.logger.warn('Codex response did not include a conversation id; follow-up prompts will start new sessions.');
       this.warnedMissingConversationId = true;
     }, 300);
+  }
+
+  private extractAttachmentDescriptors(message: any): AttachmentDescriptor[] {
+    const attachments: AttachmentDescriptor[] = [];
+    const document = message.document;
+    if (document && typeof document.file_id === 'string') {
+      attachments.push({
+        fileId: document.file_id,
+        kind: 'document',
+        suggestedName: typeof document.file_name === 'string' ? document.file_name : undefined,
+      });
+    }
+    if (Array.isArray(message.photo) && message.photo.length) {
+      const photo = message.photo[message.photo.length - 1];
+      if (photo && typeof photo.file_id === 'string') {
+        attachments.push({
+          fileId: photo.file_id,
+          kind: 'photo',
+          suggestedName:
+            typeof photo.file_unique_id === 'string' ? `photo-${photo.file_unique_id}` : undefined,
+        });
+      }
+    }
+    return attachments;
+  }
+
+  private async handleFileAttachments(descriptors: AttachmentDescriptor[]): Promise<void> {
+    if (!descriptors.length) {
+      return;
+    }
+    const savedPaths: string[] = [];
+    const failures: string[] = [];
+
+    for (const descriptor of descriptors) {
+      try {
+        const stored = await this.storeAttachment(descriptor);
+        savedPaths.push(stored);
+      } catch (err) {
+        const message = (err as Error).message;
+        failures.push(`${descriptor.kind}: ${message}`);
+        this.logger.error(`Attachment storage failed (${descriptor.kind}): ${message}`);
+      }
+    }
+
+    if (savedPaths.length) {
+      const displayPaths = savedPaths.map((absolutePath) => {
+        const relative = path.relative(this.config.codexCwd, absolutePath);
+        if (relative && !relative.startsWith('..')) {
+          return relative;
+        }
+        return absolutePath;
+      });
+      await this.sendText(['Saved attachment(s):', ...displayPaths.map((p) => `- ${p}`)].join('\n'));
+    }
+
+    if (failures.length) {
+      await this.sendText(
+        ['Failed to save attachment(s):', ...failures.map((line) => `- ${line}`)].join('\n'),
+      );
+    }
+  }
+
+  private async storeAttachment(descriptor: AttachmentDescriptor): Promise<string> {
+    const response = await this.apiRequest('getFile', { file_id: descriptor.fileId });
+    if (!response.ok || !response.result?.file_path) {
+      throw new Error('Telegram getFile returned no file_path.');
+    }
+    const remotePath = response.result.file_path as string;
+    const destination = this.resolveAttachmentDestination(remotePath, descriptor);
+    await this.downloadTelegramFile(remotePath, destination);
+    return destination;
+  }
+
+  private resolveAttachmentDestination(remotePath: string, descriptor: AttachmentDescriptor): string {
+    const remoteName = path.basename(remotePath);
+    const fallbackName = descriptor.suggestedName || remoteName || `${descriptor.kind}-${Date.now()}`;
+    const { baseName, extension } = buildAttachmentNameParts(fallbackName, remoteName, descriptor.kind);
+    const dir = this.config.attachmentsDir;
+    ensureDirectory(dir);
+    let attempt = `${baseName}${extension}`;
+    let counter = 1;
+    while (fs.existsSync(path.join(dir, attempt))) {
+      attempt = `${baseName}-${counter}${extension}`;
+      counter += 1;
+    }
+    return path.join(dir, attempt);
+  }
+
+  private downloadTelegramFile(remotePath: string, destination: string): Promise<void> {
+    ensureDirectory(path.dirname(destination));
+    return new Promise((resolve, reject) => {
+      const request = https.get(
+        {
+          hostname: 'api.telegram.org',
+          method: 'GET',
+          path: `/file/bot${this.config.botToken}/${remotePath}`,
+        },
+        (res) => {
+          if (res.statusCode !== 200) {
+            res.resume();
+            reject(new Error(`Telegram file download failed with status ${res.statusCode}`));
+            return;
+          }
+          const fileStream = fs.createWriteStream(destination);
+          res.pipe(fileStream);
+          fileStream.on('finish', () =>
+            fileStream.close((err) => {
+              if (err) {
+                reject(err);
+                return;
+              }
+              resolve();
+            }),
+          );
+          fileStream.on('error', (err) => reject(err));
+        },
+      );
+      request.on('error', (err) => reject(err));
+    });
   }
 
   private async sendText(text: string): Promise<void> {
@@ -696,6 +841,31 @@ function chunkMessage(text: string, size: number): string[] {
     chunks.push(remaining);
   }
   return chunks;
+}
+
+function buildAttachmentNameParts(
+  candidate: string,
+  remoteName: string,
+  kind: 'document' | 'photo',
+): { baseName: string; extension: string } {
+  const sanitizedCandidate = sanitizeFileComponent(candidate);
+  const sanitizedRemote = sanitizeFileComponent(remoteName);
+  const parsedCandidate = path.parse(sanitizedCandidate);
+  const parsedRemote = path.parse(sanitizedRemote);
+  let baseName = parsedCandidate.name || sanitizedCandidate || parsedRemote.name || kind;
+  let extension = parsedCandidate.ext || parsedRemote.ext;
+  if (!extension && kind === 'photo') {
+    extension = '.jpg';
+  }
+  baseName = baseName || 'file';
+  return { baseName, extension: extension || '' };
+}
+
+function sanitizeFileComponent(value: string): string {
+  if (!value) {
+    return '';
+  }
+  return value.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
 function escapeHtml(text: string): string {

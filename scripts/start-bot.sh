@@ -12,10 +12,14 @@ fi
 mkdir -p "$(dirname "$log_path")"
 cd "$repo_root"
 
+npm run build
+
 set -o allexport
 if [ -f ".env" ]; then
   source ".env"
 fi
 set +o allexport
+
+export CODEX_CWD="${CODEX_CWD:-$caller_pwd}"
 
 node dist/cli.js > >(tee -a "$log_path") 2>&1
