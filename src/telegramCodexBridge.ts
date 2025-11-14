@@ -53,9 +53,32 @@ export class TelegramCodexBridge {
   private readonly rpcPending = new Map<string, RpcPending>();
   private rpcCounter = 1;
   private readonly recentTail: string[] = [];
+  private readonly fatalListeners = new Set<(error: Error) => void>();
+  private fatalEmitted = false;
+  private startedAt: Date | null = null;
+  private lastInteractionAt: Date | null = null;
 
   constructor(private readonly config: BotifyConfig, logger?: BridgeLogger) {
     this.logger = logger ?? console;
+  }
+
+  onFatal(handler: (error: Error) => void): () => void {
+    this.fatalListeners.add(handler);
+    return () => this.fatalListeners.delete(handler);
+  }
+
+  private emitFatal(error: Error): void {
+    if (this.fatalEmitted) {
+      return;
+    }
+    this.fatalEmitted = true;
+    for (const handler of this.fatalListeners) {
+      try {
+        handler(error);
+      } catch (err) {
+        this.logger.error(`Fatal handler threw: ${(err as Error).message}`);
+      }
+    }
   }
 
   async start(): Promise<void> {
@@ -63,6 +86,9 @@ export class TelegramCodexBridge {
       return;
     }
     this.stopRequested = false;
+    this.fatalEmitted = false;
+    this.startedAt = new Date();
+    this.lastInteractionAt = null;
     ensureDirectory(this.config.codexHome);
     ensureDirectory(this.config.attachmentsDir);
     const codexEnv = {
@@ -80,14 +106,16 @@ export class TelegramCodexBridge {
     });
 
     codexProcess.on('error', (err) => {
-      this.logger.error('Failed to launch Codex MCP server.', err);
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.logger.error('Failed to launch Codex MCP server.', error);
       void this.notifyOwner(
         [
           'Codex bridge failed to launch the MCP server.',
           `Command: ${this.config.codexCommand}`,
-          `Error: ${err.message || String(err)}`,
+          `Error: ${error.message}`,
         ].join('\n'),
       );
+      this.emitFatal(error);
     });
 
     codexProcess.stderr.on('data', (data: Buffer) => {
@@ -107,6 +135,9 @@ export class TelegramCodexBridge {
       ].join('\n');
       this.logger.error(message);
       void this.notifyOwner(message);
+      if (!this.stopRequested) {
+        this.emitFatal(new Error(message));
+      }
       void this.stop();
     });
 
@@ -121,22 +152,26 @@ export class TelegramCodexBridge {
     this.running = true;
 
     this.initPromise = this.initCodex().catch((err) => {
-      this.logger.error('Codex initialization failed.', err);
-      void this.notifyOwner(`Codex initialization failed:\n${err.message || String(err)}`);
-      throw err;
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.logger.error('Codex initialization failed.', error);
+      void this.notifyOwner(`Codex initialization failed:\n${error.message}`);
+      this.emitFatal(error);
+      throw error;
     });
 
     this.pollLoopPromise = this.pollUpdates().catch((err) => {
       if (this.stopRequested) {
         return;
       }
-      this.logger.error('Fatal Telegram polling error.', err);
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.logger.error('Fatal Telegram polling error.', error);
+      this.emitFatal(error);
     });
 
     await this.initPromise;
   }
 
-  async stop(): Promise<void> {
+  async stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
     if (!this.running) {
       return;
     }
@@ -156,7 +191,7 @@ export class TelegramCodexBridge {
 
     if (this.codexProcess) {
       try {
-        this.codexProcess.kill('SIGTERM');
+        this.codexProcess.kill(signal);
       } catch (err) {
         this.logger.warn('Failed to terminate Codex process gracefully.', err as Error);
       }
@@ -177,6 +212,8 @@ export class TelegramCodexBridge {
     this.lastRolloutPath = null;
     this.processingQueue = false;
     this.warnedMissingConversationId = false;
+    this.startedAt = null;
+    this.lastInteractionAt = null;
     this.running = false;
   }
 
@@ -419,6 +456,11 @@ export class TelegramCodexBridge {
           `Queue length: ${this.messageQueue.length}`,
           `Active conversation: ${this.currentConversationId ?? 'none'}`,
           `Last rollout: ${this.lastRolloutPath ?? 'n/a'}`,
+          `Working dir: ${this.config.codexCwd}`,
+          `Started: ${this.formatTimestamp(this.startedAt)}`,
+          `Last interaction: ${this.formatTimestamp(this.lastInteractionAt)}`,
+          `Model: ${this.config.model ?? 'default'}`,
+          `Sandbox: ${this.config.sandboxMode ?? 'n/a'}`,
         ].join('\n'),
       );
       return;
@@ -466,6 +508,7 @@ export class TelegramCodexBridge {
   }
 
   private async handlePrompt(prompt: string): Promise<string> {
+    this.markInteraction();
     const args: Record<string, unknown> = { prompt };
     if (this.config.sandboxMode) {
       args.sandbox = this.config.sandboxMode;
@@ -511,6 +554,9 @@ export class TelegramCodexBridge {
     if (result?.rolloutPath) {
       this.lastRolloutPath = result.rolloutPath;
     }
+    if (typeof result?.conversationId === 'string' && result.conversationId.trim().length) {
+      this.updateCurrentConversationId(result.conversationId.trim());
+    }
 
     const updatedFromResult = this.maybeUpdateConversationId(result);
     if (!updatedFromResult && !this.currentConversationId) {
@@ -527,17 +573,21 @@ export class TelegramCodexBridge {
     return formatted || '(Codex returned no content.)';
   }
 
-  private maybeUpdateConversationId(payload: unknown): boolean {
-    const conversationId = extractConversationId(payload);
-    if (!conversationId) {
-      return false;
-    }
+  private updateCurrentConversationId(conversationId: string): void {
     this.currentConversationId = conversationId;
     this.warnedMissingConversationId = false;
     if (this.missingConversationIdTimeout) {
       clearTimeout(this.missingConversationIdTimeout);
       this.missingConversationIdTimeout = null;
     }
+  }
+
+  private maybeUpdateConversationId(payload: unknown): boolean {
+    const conversationId = extractConversationId(payload);
+    if (!conversationId) {
+      return false;
+    }
+    this.updateCurrentConversationId(conversationId);
     return true;
   }
 
@@ -556,6 +606,17 @@ export class TelegramCodexBridge {
       this.logger.warn('Codex response did not include a conversation id; follow-up prompts will start new sessions.');
       this.warnedMissingConversationId = true;
     }, 300);
+  }
+
+  private markInteraction(): void {
+    this.lastInteractionAt = new Date();
+  }
+
+  private formatTimestamp(value: Date | null): string {
+    if (!value) {
+      return 'n/a';
+    }
+    return value.toISOString();
   }
 
   private extractAttachmentDescriptors(message: any): AttachmentDescriptor[] {

@@ -27,7 +27,7 @@ export interface BridgeLogger {
 
 export interface BridgeLifecycle {
   start(): Promise<void>;
-  stop(): Promise<void>;
+  stop(signal?: NodeJS.Signals): Promise<void>;
 }
 
 export interface StartOptions {

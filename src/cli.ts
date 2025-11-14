@@ -7,10 +7,25 @@ import { TelegramCodexBridge } from './telegramCodexBridge.js';
 async function main(): Promise<void> {
   loadDotenv();
   let bridge: TelegramCodexBridge | null = null;
+  let unsubscribeFatal: (() => void) | null = null;
+  let fatalHandled = false;
 
   try {
     const config = loadConfigFromEnv();
     bridge = new TelegramCodexBridge(config);
+    unsubscribeFatal = bridge.onFatal((error: Error) => {
+      if (fatalHandled) {
+        return;
+      }
+      fatalHandled = true;
+      console.error(`Fatal bridge error: ${error.message}`);
+      const stopping = bridge ? bridge.stop() : Promise.resolve();
+      void stopping
+        .catch(() => {})
+        .finally(() => {
+          process.exit(1);
+        });
+    });
     await bridge.start();
     console.log('Telegram Codex bridge is running. Press Ctrl+C to stop.');
   } catch (err) {
@@ -24,9 +39,11 @@ async function main(): Promise<void> {
       console.log(`Received ${signal}. Shutting down bridge...`);
       process.removeListener('SIGINT', onSigint);
       process.removeListener('SIGTERM', onSigterm);
+      unsubscribeFatal?.();
+      unsubscribeFatal = null;
       if (bridge) {
         bridge
-          .stop()
+          .stop(signal)
           .then(() => resolve())
           .catch(() => resolve());
       } else {
