@@ -1,0 +1,3 @@
+[submodule "botify"]
+	path = botify
+	url = git@github.com:edoardoc/botify.git

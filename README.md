@@ -79,3 +79,17 @@ All options are read from environment variables and have sensible defaults align
 - Any Telegram document or photo sent to the bot is downloaded immediately and stored inside `BOTIFY_ATTACHMENTS_DIR` (default `./uploads` relative to the Codex CWD).
 - Add this directory to your `.gitignore` (already ignored by default) so large binaries never end up in version control.
 - When a file is saved, the bot sends back the relative path so you can reference it in follow-up prompts (e.g. “use `uploads/photo-abc123.jpg` as the hero image”).
+
+
+## Booting bots on macos
+
+Change file `start_all_bots.sh` with the bots you created, then change all absolute paths `/Users/eddy/...` with your paths in `com.500nits.startbots.plist` then do a:
+
+```
+chmod +x ~/projects/botify/.local/bin/start_all_bots.sh
+launchctl unload ~/Library/LaunchAgents/com.500nits.startbots.plist 2>/dev/null || true
+launchctl load  ~/Library/LaunchAgents/com.500nits.startbots.plist
+launchctl start com.500nits.startbots
+```
+
+this will start all your bots at every boot
