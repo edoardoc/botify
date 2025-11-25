@@ -13,7 +13,7 @@ start_session() {
     echo "starting tmux session $name"
 
     # cmd to start the botify/scripts/start-bot.sh
-    local cmd="cd \"$dir\" && { title $name 2>/dev/null || true; } && set -o allexport; source .env; set +o allexport && botify/scripts/start-bot.sh > >(tee -a ./doodlebotlogfile.log) 2>&1"
+    local cmd="cd \"$dir\" && { title $name 2>/dev/null || true; } && botify/scripts/start-bot.sh > >(tee -a ./doodlebotlogfile.log) 2>&1"
 
     # Run that line in a bash login shell so it behaves like your terminal
     tmux new -d -s "$name" "bash -lc '$cmd'"
