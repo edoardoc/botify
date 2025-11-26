@@ -432,6 +432,7 @@ export class TelegramCodexBridge {
           '/ping   – heartbeat',
           '/reset  – drop the active Codex session',
           '/status – show server status',
+          '/relive – gracefully exit so a new build can start',
           '/help   – this message',
           '',
           'Any other message is forwarded to Codex via MCP.',
@@ -470,10 +471,16 @@ export class TelegramCodexBridge {
           `Server time zone: ${this.timeZoneLabel}`,
           `Started: ${this.formatTimestamp(this.startedAt)}`,
           `Last interaction: ${this.formatTimestamp(this.lastInteractionAt)}`,
+          `Botify version: ${versionString}`,
           `Model: ${this.config.model ?? 'default'}`,
           `Sandbox: ${this.config.sandboxMode ?? 'n/a'}`,
         ].join('\n'),
       );
+      return;
+    }
+
+    if (trimmed === '/relive') {
+      this.handleReliveCommand();
       return;
     }
 
@@ -664,6 +671,25 @@ export class TelegramCodexBridge {
     this.sendText('Boot log: Botify is alive, caffeinated, and ready for /status shenanigans.').catch((err) => {
       this.logger.warn(`Failed to send startup announcement: ${(err as Error).message}`);
     });
+  }
+
+  private handleReliveCommand(): void {
+    this.logger.warn('Received /relive command; preparing to exit.');
+    const message = `I'll be back! Botify ${versionString} is shutting down so a newer build can come online in a few minutes.`;
+    const finishShutdown = () => {
+      void this.stop('SIGTERM')
+        .catch((err) => {
+          this.logger.warn('Relive shutdown encountered an error.', err as Error);
+        })
+        .finally(() => {
+          process.exit(0);
+        });
+    };
+    void this.sendText(message)
+      .catch((err) => {
+        this.logger.warn(`Failed to send /relive notice: ${(err as Error).message}`);
+      })
+      .finally(() => finishShutdown());
   }
 
   private extractAttachmentDescriptors(message: any): AttachmentDescriptor[] {

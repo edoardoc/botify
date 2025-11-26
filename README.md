@@ -62,6 +62,8 @@ Before interacting with the bot make sure it was invoked from the host directory
 ### Codes Authorization
 Codex will create a `<host_project>/.codex_mcp_home/` where a file `auth.json` should be present (after codex login that file is created)
 
+If Codex ever says `Your access token could not be refreshed because your refresh token was already used`, the refresh token in `.codex_mcp_home/auth.json` has been consumed by another session. Run `codex logout && codex login` (or `codex auth login`), then copy the freshly generated `auth.json` back into this project before restarting the bridge.
+
 ## Obtaining Telegram Keys
 1. DM `@BotFather`, run `/newbot`, follow the prompts, and copy the resulting `TELEGRAM_BOT_TOKEN`.
 2. Start a chat with the bot (or add it to a group) and send a dummy message.
