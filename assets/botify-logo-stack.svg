@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="220" height="260" viewBox="0 0 220 160">
+  <defs>
+    <style>
+      .wordmark { fill: #0a2463; font-family: 'Courier New', monospace; font-size: 48px; font-weight: 600; }
+    </style>
+  </defs>
+  <rect width="220" height="160" fill="#ffffff" />
+  <text class="wordmark" x="20" y="65">[bot]</text>
+  <text class="wordmark" x="40" y="120">...ify!</text>
+</svg>

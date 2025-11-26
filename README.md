@@ -1,5 +1,7 @@
 # Botify
 
+![Botify logo](assets/botify-logo-minimal.svg)
+
 Reusable Telegram ↔ Codex bridge that can be dropped into any repository. 
 
 ## Features
