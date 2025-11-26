@@ -58,9 +58,14 @@ export class TelegramCodexBridge {
   private fatalEmitted = false;
   private startedAt: Date | null = null;
   private lastInteractionAt: Date | null = null;
+  private readonly timeFormatter: Intl.DateTimeFormat;
+  private readonly timeZoneLabel: string;
 
   constructor(private readonly config: BotifyConfig, logger?: BridgeLogger) {
     this.logger = logger ?? console;
+    const { formatter, timeZone } = this.createTimeFormatter();
+    this.timeFormatter = formatter;
+    this.timeZoneLabel = timeZone;
   }
 
   onFatal(handler: (error: Error) => void): () => void {
@@ -126,18 +131,21 @@ export class TelegramCodexBridge {
     });
 
     codexProcess.on('exit', (code, signal) => {
-      const reason = signal ? `signal ${signal}` : `code ${code}`;
+      const reason = signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`;
       const tail = this.recentTail.length ? this.recentTail.join('\n') : 'No buffered output.';
-      const message = [
+      const diagnostic = [
         `Codex MCP server exited (${reason}).`,
         'Recent output:',
         tail,
         'Restart the bridge once the underlying issue is resolved.',
       ].join('\n');
-      this.logger.error(message);
-      void this.notifyOwner(message);
+      this.logger.error(diagnostic);
+      const exitQuip = signal
+        ? `Codex MCP server yeeted itself after catching ${signal}. Please restart me once it's safe.`
+        : `Codex MCP server dramatically face-planted with exit code ${code ?? 'unknown'}. Please restart when ready.`;
+      void this.notifyOwner(exitQuip);
       if (!this.stopRequested) {
-        this.emitFatal(new Error(message));
+        this.emitFatal(new Error(diagnostic));
       }
       void this.stop();
     });
@@ -170,6 +178,7 @@ export class TelegramCodexBridge {
     });
 
     await this.initPromise;
+    this.announceStartup();
   }
 
   async stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
@@ -458,6 +467,7 @@ export class TelegramCodexBridge {
           `Active conversation: ${this.currentConversationId ?? 'none'}`,
           `Last rollout: ${this.lastRolloutPath ?? 'n/a'}`,
           `Working dir: ${this.config.codexCwd}`,
+          `Server time zone: ${this.timeZoneLabel}`,
           `Started: ${this.formatTimestamp(this.startedAt)}`,
           `Last interaction: ${this.formatTimestamp(this.lastInteractionAt)}`,
           `Model: ${this.config.model ?? 'default'}`,
@@ -617,7 +627,43 @@ export class TelegramCodexBridge {
     if (!value) {
       return 'n/a';
     }
-    return value.toISOString();
+    try {
+      return `${this.timeFormatter.format(value)} (${this.timeZoneLabel})`;
+    } catch (err) {
+      this.logger.warn(`Failed to format timestamp: ${(err as Error).message}`);
+      return value.toISOString();
+    }
+  }
+
+  private createTimeFormatter(): { formatter: Intl.DateTimeFormat; timeZone: string } {
+    const systemZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    try {
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        dateStyle: 'medium',
+        timeStyle: 'medium',
+        hour12: false,
+        timeZone: systemZone,
+        timeZoneName: 'short',
+      });
+      const resolved = formatter.resolvedOptions().timeZone || systemZone;
+      return { formatter, timeZone: resolved };
+    } catch (err) {
+      this.logger.warn(`Failed to initialize server time formatter: ${(err as Error).message}`);
+      const fallbackFormatter = new Intl.DateTimeFormat('en-US', {
+        dateStyle: 'medium',
+        timeStyle: 'medium',
+        hour12: false,
+        timeZone: 'UTC',
+        timeZoneName: 'short',
+      });
+      return { formatter: fallbackFormatter, timeZone: 'UTC' };
+    }
+  }
+
+  private announceStartup(): void {
+    this.sendText('Boot log: Botify is alive, caffeinated, and ready for /status shenanigans.').catch((err) => {
+      this.logger.warn(`Failed to send startup announcement: ${(err as Error).message}`);
+    });
   }
 
   private extractAttachmentDescriptors(message: any): AttachmentDescriptor[] {
