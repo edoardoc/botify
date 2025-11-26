@@ -102,7 +102,7 @@ Start the bridge with `./botify/scripts/start-bot.sh` (submodule) or `botify` (g
 | (any other text) | Relayed to Codex via MCP; responses stream back as formatted messages. |
 
 ## Version Information
-Every build captures the current Git branch and commit in `version-meta.json` and exposes it through the CLI:
+Every build captures the current Git branch and commit in `version-meta.json` and exposes it through the CLI, so you always know if you're running a tailored build of the tool:
 - `botify --version` (or `botify -v`) prints `semver+branch.commit`, making it easy to audit what was installed globally.
 - The same version string is advertised to Codex in the `clientInfo` payload so remote sessions can also see which build is active.
 If Git metadata is unavailable during installation, the CLI falls back to the base `package.json` version and marks branch/commit as `unknown`.
