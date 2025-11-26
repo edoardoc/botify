@@ -90,10 +90,16 @@ Codex creates `<host_project>/.codex_mcp_home/auth.json` during `codex login`. K
 4. If you do not see the chat listed, send another message to the bot and re-run the command; Telegram only returns chats with recent activity.
 
 ## Usage
-After installation and configuration, start the bridge via `./botify/scripts/start-bot.sh` (submodule) or `botify` (global CLI). Once running, chat with your Telegram bot:
-- `/help` lists commands.
-- `/ping`, `/status`, `/reset`, and `/relive` manage health checks, state, and restarts.
-- Any non-command message is forwarded to Codex via MCP, and responses stream back as formatted text.
+Start the bridge with `./botify/scripts/start-bot.sh` (submodule) or `botify` (global CLI), then interact with it through Telegram commands:
+
+| Command | Description |
+| --- | --- |
+| `/help` | Show command list and a short bridge description. |
+| `/ping` | Quick heartbeat that replies with `pong`. |
+| `/status` | Report Codex readiness, queue length, timestamps, sandbox, and Botify version. |
+| `/reset` | Drop the active Codex conversation and clear pending prompts. |
+| `/relive` | Notify the chat that Botify is shutting down and exit with code 0 so a new build can restart. |
+| (any other text) | Relayed to Codex via MCP; responses stream back as formatted messages. |
 
 ## Version Information
 Every build captures the current Git branch and commit in `version-meta.json` and exposes it through the CLI:
