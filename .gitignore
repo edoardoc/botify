@@ -6,3 +6,4 @@ dist
 .env
 .codex_mcp_home/
 uploads/
+version-meta.json

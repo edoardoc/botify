@@ -9,10 +9,21 @@ Reusable Telegram ↔ Codex bridge that can be dropped into any repository.
 - Graceful shutdown and rich status/help commands exposed via Telegram.
 
 ## Quick Start
+
+Choose the installation flow that best matches your project.
+
+### Option 1: Git Submodule
 1. `git submodule add git@github.com:edoardoc/botify.git`
-2. do a `npm install` inside the `botify/` folder
+2. run `npm install` inside the `botify/` folder
 3. make sure you have a `<host_project>/.codex_mcp_home/auth.json` with something valid inside
-4. launch botify from the <host_project> folder with `./botify/scripts/start-bot.sh`
+4. launch Botify from the `<host_project>` folder with `./botify/scripts/start-bot.sh`
+
+### Option 2: Global npm CLI
+1. Install the CLI once: `npm install -g github:edoardoc/botify` (or use the SSH form `npm install -g git+ssh://git@github.com/edoardoc/botify.git`).
+2. Inside each host project, create a `.env` file (use the table in [Env and activations](#env-and-activations) or `.env.example` from this repo as a template) and populate the required variables.
+3. From the host project root, run `botify` to start the bridge. The binary loads `.env`, treats the current folder as `CODEX_CWD`, and writes Codex artifacts in `<project>/.codex_mcp_home/`.
+4. Optional: set `BOTIFY_LOG_PATH=./logs/botify.log botify` to mirror output into your project log directory.
+5. Update the CLI later via `npm update -g botify`. Run `botify --version` at any time to confirm which branch/commit is installed (e.g., `0.1.0+main.abc1234`).
 
 ## Details
 
@@ -25,6 +36,24 @@ Inside the host project, add a submodule: `git submodule add git@github.com:edoa
    - Optional Codex overrides (command, sandbox, approval policy, etc.) can stay commented out.
 
 Once the process is running, chat with your Telegram bot. Any non-command message is forwarded to Codex and the response is streamed back as formatted text.
+
+### Global npm Install Workflow
+If you prefer keeping Botify outside of your repo, install it globally and call the CLI inside each project:
+
+```bash
+npm install -g github:edoardoc/botify
+
+# inside a host repo
+BOTIFY_LOG_PATH=./logs/botify.log botify
+```
+
+The executable loads `.env` from the current directory, so each host project can manage its own Telegram/Codex credentials without duplicating the codebase. Update to a newer release at any time with `npm update -g botify`.
+
+### Version Information
+Every build captures the current Git branch and commit in `version-meta.json` and exposes it through the CLI:
+- `botify --version` (or `botify -v`) prints `semver+branch.commit`, making it easy to audit what was installed globally.
+- The same version string is advertised to Codex in the `clientInfo` payload so remote sessions can also see which build is active.
+If Git metadata is unavailable during installation, the CLI falls back to the base `package.json` version and marks branch/commit as `unknown`.
 
 ## Bot Launcher Script
 From the host project root, run `./botify/scripts/start-bot.sh` to load `.env`, boot the compiled bridge, and mirror all output to `./logs/botify.log` (created automatically). Override the log destination with `BOTIFY_LOG_PATH=/custom/path.log` if you prefer a different location.

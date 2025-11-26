@@ -3,8 +3,22 @@ import process from 'node:process';
 import { config as loadDotenv } from 'dotenv';
 import { loadConfigFromEnv } from './config.js';
 import { TelegramCodexBridge } from './telegramCodexBridge.js';
+import { botifyVersion } from './version.js';
 
 async function main(): Promise<void> {
+  const args = new Set(process.argv.slice(2));
+  if (args.has('--version') || args.has('-v')) {
+    const details = [`botify ${botifyVersion.version}`];
+    if (botifyVersion.branch && botifyVersion.branch !== 'unknown') {
+      details.push(`branch: ${botifyVersion.branch}`);
+    }
+    if (botifyVersion.commit && botifyVersion.commit !== 'unknown') {
+      details.push(`commit: ${botifyVersion.commit}`);
+    }
+    console.log(details.join(' | '));
+    return;
+  }
+
   loadDotenv();
   let bridge: TelegramCodexBridge | null = null;
   let unsubscribeFatal: (() => void) | null = null;

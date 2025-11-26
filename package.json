@@ -8,13 +8,23 @@
     ".": "./dist/index.js",
     "./cli": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "scripts",
+    "README.md",
+    "version-meta.json"
+  ],
   "bin": {
     "botify": "./dist/cli.js"
   },
   "scripts": {
+    "prebuild": "node ./scripts/write-version.mjs",
     "build": "tsc -p tsconfig.json",
     "clean": "rimraf dist",
-    "lint": "tsc --noEmit -p tsconfig.json"
+    "prelint": "node ./scripts/write-version.mjs",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run lint && npm run build"
   },
   "keywords": [
     "codex",

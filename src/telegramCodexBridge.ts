@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { BotifyConfig, BridgeLogger } from './types.js';
+import { versionString } from './version.js';
 
 interface MessageQueueItem {
   text: string;
@@ -220,7 +221,7 @@ export class TelegramCodexBridge {
   private async initCodex(): Promise<void> {
     await this.sendRpc('initialize', {
       protocolVersion: '2024-10-07',
-      clientInfo: { name: 'telegram-bridge', version: '0.1.0' },
+      clientInfo: { name: 'telegram-bridge', version: versionString },
       capabilities: {},
     });
     this.sendNotification('initialized', {});
