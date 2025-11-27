@@ -146,7 +146,9 @@ export class TelegramCodexBridge {
       this.logger.error(diagnostic);
       const exitQuip = signal
         ? `Codex MCP server yeeted itself after catching ${signal}. Please restart me once it's safe.`
-        : `Codex MCP server dramatically face-planted with exit code ${code ?? 'unknown'}. Please restart when ready.`;
+        : code === 0
+          ? 'Codex MCP server clocked out politely (code 0). Summon me again when you need more magic.'
+          : `Codex MCP server dramatically face-planted with exit code ${code ?? 'unknown'}. Please restart when ready.`;
       void this.notifyOwner(exitQuip);
       if (!this.stopRequested) {
         this.emitFatal(new Error(diagnostic));
