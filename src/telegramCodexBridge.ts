@@ -64,6 +64,7 @@ export class TelegramCodexBridge {
   private lastInteractionAt: Date | null = null;
   private readonly timeFormatter: DateFormatter;
   private readonly timeZoneLabel: string;
+  private gitInfoWarningLogged = false;
 
   constructor(private readonly config: BotifyConfig, logger?: BridgeLogger) {
     this.logger = logger ?? console;
@@ -672,33 +673,98 @@ export class TelegramCodexBridge {
   }
 
   private getRepositoryBranch(): string {
+    const root = this.config.codexCwd || process.cwd();
     try {
       const output = execSync('git rev-parse --abbrev-ref HEAD', {
-        cwd: this.config.codexCwd || process.cwd(),
+        cwd: root,
         stdio: ['ignore', 'pipe', 'ignore'],
       })
         .toString()
         .trim();
-      return output || 'unknown';
+      if (output) {
+        return output;
+      }
     } catch (err) {
-      this.logger.warn(`Failed to read git branch: ${(err as Error).message}`);
+      this.logGitWarning(`Failed to read git branch via git: ${(err as Error).message}`);
+    }
+    const gitDir = this.getGitDirectory(root);
+    if (!gitDir) {
+      return 'unknown';
+    }
+    try {
+      const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+      if (head.startsWith('ref:')) {
+        const ref = head.slice(5).trim();
+        const parts = ref.split('/');
+        return parts[parts.length - 1] || ref;
+      }
+      return head ? '(detached HEAD)' : 'unknown';
+    } catch (err) {
+      this.logGitWarning(`Failed to parse .git/HEAD: ${(err as Error).message}`);
       return 'unknown';
     }
   }
 
   private getRepositoryHead(): string {
+    const root = this.config.codexCwd || process.cwd();
     try {
       const output = execSync('git log -1 --pretty=format:%h %s', {
-        cwd: this.config.codexCwd || process.cwd(),
+        cwd: root,
         stdio: ['ignore', 'pipe', 'ignore'],
       })
         .toString()
         .trim();
-      return output || 'unknown';
+      if (output) {
+        return output;
+      }
     } catch (err) {
-      this.logger.warn(`Failed to read git head: ${(err as Error).message}`);
+      this.logGitWarning(`Failed to read git head via git: ${(err as Error).message}`);
+    }
+    const gitDir = this.getGitDirectory(root);
+    if (!gitDir) {
       return 'unknown';
     }
+    try {
+      const headContent = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+      if (headContent.startsWith('ref:')) {
+        const ref = headContent.slice(5).trim();
+        const refPath = path.join(gitDir, ref);
+        const hash = fs.readFileSync(refPath, 'utf8').trim();
+        return hash ? `${hash.slice(0, 7)} (message unavailable)` : 'unknown';
+      }
+      return headContent ? `${headContent.slice(0, 7)} (detached)` : 'unknown';
+    } catch (err) {
+      this.logGitWarning(`Failed to resolve git head: ${(err as Error).message}`);
+      return 'unknown';
+    }
+  }
+
+  private getGitDirectory(root: string): string | null {
+    const dotGitPath = path.join(root, '.git');
+    try {
+      const stats = fs.statSync(dotGitPath);
+      if (stats.isDirectory()) {
+        return dotGitPath;
+      }
+      if (stats.isFile()) {
+        const content = fs.readFileSync(dotGitPath, 'utf8');
+        const match = content.trim().match(/^gitdir:\s*(.+)$/i);
+        if (match) {
+          return path.resolve(root, match[1]);
+        }
+      }
+    } catch (err) {
+      this.logGitWarning(`Failed to locate .git directory: ${(err as Error).message}`);
+    }
+    return null;
+  }
+
+  private logGitWarning(message: string): void {
+    if (this.gitInfoWarningLogged) {
+      return;
+    }
+    this.gitInfoWarningLogged = true;
+    this.logger.warn(message);
   }
 
   private announceStartup(): void {
