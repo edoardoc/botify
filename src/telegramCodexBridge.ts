@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -476,6 +476,8 @@ export class TelegramCodexBridge {
           `Server time zone: ${this.timeZoneLabel}`,
           `Started: ${this.formatTimestamp(this.startedAt)}`,
           `Last interaction: ${this.formatTimestamp(this.lastInteractionAt)}`,
+          `Repo branch: ${this.getRepositoryBranch()}`,
+          `Last commit: ${this.getRepositoryHead()}`,
           `Botify version: ${versionString}`,
           `Model: ${this.config.model ?? 'default'}`,
           `Sandbox: ${this.config.sandboxMode ?? 'n/a'}`,
@@ -665,6 +667,36 @@ export class TelegramCodexBridge {
         format: (value: Date) => value.toISOString(),
       };
       return { formatter: fallbackFormatter, timeZone: 'UTC' };
+    }
+  }
+
+  private getRepositoryBranch(): string {
+    try {
+      const output = execSync('git rev-parse --abbrev-ref HEAD', {
+        cwd: this.config.codexCwd,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+        .toString()
+        .trim();
+      return output || 'unknown';
+    } catch (err) {
+      this.logger.warn(`Failed to read git branch: ${(err as Error).message}`);
+      return 'unknown';
+    }
+  }
+
+  private getRepositoryHead(): string {
+    try {
+      const output = execSync('git log -1 --pretty=format:%h %s', {
+        cwd: this.config.codexCwd,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+        .toString()
+        .trim();
+      return output || 'unknown';
+    } catch (err) {
+      this.logger.warn(`Failed to read git head: ${(err as Error).message}`);
+      return 'unknown';
     }
   }
 
