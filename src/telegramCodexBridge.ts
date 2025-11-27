@@ -668,7 +668,8 @@ export class TelegramCodexBridge {
   }
 
   private announceStartup(): void {
-    this.sendText('Boot log: Botify is alive, caffeinated, and ready for /status shenanigans.').catch((err) => {
+    const message = `Heads up! Botify ${versionString} is online and ready.`;
+    this.sendText(message).catch((err) => {
       this.logger.warn(`Failed to send startup announcement: ${(err as Error).message}`);
     });
   }
