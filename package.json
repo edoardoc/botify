@@ -23,7 +23,6 @@
     "clean": "rimraf dist",
     "prelint": "node ./scripts/write-version.mjs",
     "lint": "tsc --noEmit -p tsconfig.json",
-    "prepare": "npm run build",
     "prepublishOnly": "npm run lint && npm run build"
   },
   "keywords": [
