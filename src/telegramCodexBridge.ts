@@ -184,7 +184,6 @@ export class TelegramCodexBridge {
     });
 
     await this.initPromise;
-    this.announceStartup();
   }
 
   async stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
@@ -667,13 +666,6 @@ export class TelegramCodexBridge {
       };
       return { formatter: fallbackFormatter, timeZone: 'UTC' };
     }
-  }
-
-  private announceStartup(): void {
-    const message = `Heads up! Botify ${versionString} is online and ready.`;
-    this.sendText(message).catch((err) => {
-      this.logger.warn(`Failed to send startup announcement: ${(err as Error).message}`);
-    });
   }
 
   private handleReliveCommand(): void {
