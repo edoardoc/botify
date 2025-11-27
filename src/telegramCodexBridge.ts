@@ -708,7 +708,7 @@ export class TelegramCodexBridge {
   private getRepositoryHead(): string {
     const root = this.config.codexCwd || process.cwd();
     try {
-      const output = execSync('git log -1 --pretty=format:%h %s', {
+      const output = execSync('git log -1 --pretty=format:%h %s %C(yellow)(%cr)', {
         cwd: root,
         stdio: ['ignore', 'pipe', 'ignore'],
       })
