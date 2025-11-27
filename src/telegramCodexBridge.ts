@@ -35,6 +35,10 @@ interface AttachmentDescriptor {
   suggestedName?: string;
 }
 
+interface DateFormatter {
+  format: (value: Date) => string;
+}
+
 export class TelegramCodexBridge {
   private readonly logger: BridgeLogger;
   private codexProcess: ChildProcessWithoutNullStreams | null = null;
@@ -58,7 +62,7 @@ export class TelegramCodexBridge {
   private fatalEmitted = false;
   private startedAt: Date | null = null;
   private lastInteractionAt: Date | null = null;
-  private readonly timeFormatter: Intl.DateTimeFormat;
+  private readonly timeFormatter: DateFormatter;
   private readonly timeZoneLabel: string;
 
   constructor(private readonly config: BotifyConfig, logger?: BridgeLogger) {
@@ -642,7 +646,7 @@ export class TelegramCodexBridge {
     }
   }
 
-  private createTimeFormatter(): { formatter: Intl.DateTimeFormat; timeZone: string } {
+  private createTimeFormatter(): { formatter: DateFormatter; timeZone: string } {
     const systemZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     try {
       const formatter = new Intl.DateTimeFormat('en-US', {
@@ -656,13 +660,9 @@ export class TelegramCodexBridge {
       return { formatter, timeZone: resolved };
     } catch (err) {
       this.logger.warn(`Failed to initialize server time formatter: ${(err as Error).message}`);
-      const fallbackFormatter = new Intl.DateTimeFormat('en-US', {
-        dateStyle: 'medium',
-        timeStyle: 'medium',
-        hour12: false,
-        timeZone: 'UTC',
-        timeZoneName: 'short',
-      });
+      const fallbackFormatter: DateFormatter = {
+        format: (value: Date) => value.toISOString(),
+      };
       return { formatter: fallbackFormatter, timeZone: 'UTC' };
     }
   }
