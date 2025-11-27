@@ -184,6 +184,7 @@ export class TelegramCodexBridge {
     });
 
     await this.initPromise;
+    this.announceStartup();
   }
 
   async stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
@@ -673,7 +674,7 @@ export class TelegramCodexBridge {
   private getRepositoryBranch(): string {
     try {
       const output = execSync('git rev-parse --abbrev-ref HEAD', {
-        cwd: this.config.codexCwd,
+        cwd: this.config.codexCwd || process.cwd(),
         stdio: ['ignore', 'pipe', 'ignore'],
       })
         .toString()
@@ -688,7 +689,7 @@ export class TelegramCodexBridge {
   private getRepositoryHead(): string {
     try {
       const output = execSync('git log -1 --pretty=format:%h %s', {
-        cwd: this.config.codexCwd,
+        cwd: this.config.codexCwd || process.cwd(),
         stdio: ['ignore', 'pipe', 'ignore'],
       })
         .toString()
@@ -698,6 +699,13 @@ export class TelegramCodexBridge {
       this.logger.warn(`Failed to read git head: ${(err as Error).message}`);
       return 'unknown';
     }
+  }
+
+  private announceStartup(): void {
+    const message = `Botify ${versionString} is online and ready.`;
+    this.sendText(message).catch((err) => {
+      this.logger.warn(`Failed to send startup announcement: ${(err as Error).message}`);
+    });
   }
 
   private handleReliveCommand(): void {
