@@ -37,6 +37,13 @@ npm install -g github:edoardoc/botify
 BOTIFY_LOG_PATH=./logs/botify.log botify
 ```
 
+> ℹ️ **Installing straight from GitHub.** npm 11 currently links git-based installs into a temporary cache directory and cleans that cache immediately, which prevents the `botify` binary from landing in `~/.npm-global/bin`. To ensure a working CLI:
+> 1. Clone the repo and check out the desired branch (`git clone git@github.com:edoardoc/botify.git && cd botify`).
+> 2. Run `npm install` to build `dist/`.
+> 3. Install from disk: `npm install -g .`
+>
+> Alternatively, pack the repository first (`npm pack github:edoardoc/botify#humanize`) and install the resulting `botify-0.1.0.tgz`. In both cases, verify `~/.npm-global/bin` (or your chosen npm prefix) is on `PATH` so the `botify` shim is discoverable.
+
 ## Configuration
 1. Copy `.env.example` to `.env` and fill in the required variables:
    - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are mandatory.
