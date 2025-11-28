@@ -648,7 +648,6 @@ export class TelegramCodexBridge {
       const resolved = formatter.resolvedOptions().timeZone || systemZone;
       return { formatter, timeZone: resolved };
     } catch (err) {
-      this.logger.warn(`Failed to initialize server time formatter: ${(err as Error).message}`);
       const fallbackFormatter: DateFormatter = {
         format: (value: Date) => value.toISOString(),
       };
@@ -684,9 +683,8 @@ export class TelegramCodexBridge {
       const output = execSync('git rev-parse --abbrev-ref HEAD', {
         cwd: root,
         stdio: ['ignore', 'pipe', 'ignore'],
-      })
-        .toString()
-        .trim();
+        encoding: 'utf8',
+      }).trim();
       if (output) {
         return output;
       }
@@ -714,12 +712,11 @@ export class TelegramCodexBridge {
   private getRepositoryHead(): string {
     const root = this.config.codexCwd || process.cwd();
     try {
-      const output = execSync('git log -1 --pretty=format:%h %s %C(yellow)(%cr)', {
+      const output = execSync('git log -1 --pretty=format:%h%x20%s%x20%C(yellow)(%cr)', {
         cwd: root,
         stdio: ['ignore', 'pipe', 'ignore'],
-      })
-        .toString()
-        .trim();
+        encoding: 'utf8',
+      }).trim();
       if (output) {
         return output;
       }
