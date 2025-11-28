@@ -23,6 +23,13 @@ Quality checks happen manually. After each change and once the commit is created
 
 This guarantees the exact code you pushed is what your local CLI runs. Stage a `.env.local` with Telegram tokens, export it (`source .env.local`), then execute the bridge via `node dist/cli.js` or the `botify` bin to confirm end-to-end behavior. Capture key log excerpts, reproduction prompts, and any Codex/Telegram transcripts so reviewers can replay your results without automation.
 
+## Routine Commit & Deployment
+Treat every well-formed, definite request (like feature tweaks or fixes with clear acceptance criteria) as a full release candidate. After fulfilling the request:
+- Run the manual verification checklist above to prove the change is production-ready.
+- Commit the work with an imperative summary and push immediately.
+- Redeploy Botify right away by reinstalling the CLI (`npm install -g .`) and validating `botify --version` matches the new `git rev-parse --short HEAD`.
+This keeps the Telegram bridge aligned with the latest satisfied request, reducing drift between requested behavior and the active deployment.
+
 ## Commit & Pull Request Guidelines
 History currently contains a single `initial commit`; adopt concise, imperative summaries (e.g., `feat: add rollout retry logging`). Reference related issues in the body, list environment variables required for validation, and attach logs or screenshots when behavior changes. PRs should describe risk areas, manual test evidence, and any follow-up work so the release checklist stays lightweight.
 

@@ -640,6 +640,44 @@ export class TelegramCodexBridge {
     }
   }
 
+  private formatRelativeDuration(value: Date | null): string {
+    if (!value) {
+      return 'n/a';
+    }
+    const diffMs = Date.now() - value.getTime();
+    if (diffMs === 0) {
+      return 'just now';
+    }
+    const past = diffMs > 0;
+    const absMs = Math.abs(diffMs);
+    const units = [
+      { label: 'year', ms: 31_536_000_000 },
+      { label: 'month', ms: 2_592_000_000 },
+      { label: 'day', ms: 86_400_000 },
+      { label: 'hour', ms: 3_600_000 },
+      { label: 'minute', ms: 60_000 },
+      { label: 'second', ms: 1_000 },
+    ];
+    const parts: string[] = [];
+    let remainder = absMs;
+    for (const unit of units) {
+      const amount = Math.floor(remainder / unit.ms);
+      if (amount > 0) {
+        const label = `${unit.label}${amount === 1 ? '' : 's'}`;
+        parts.push(`${amount} ${label}`);
+        remainder -= amount * unit.ms;
+      }
+      if (parts.length === 2) {
+        break;
+      }
+    }
+    if (!parts.length) {
+      return past ? 'just now' : 'any moment now';
+    }
+    const joined = parts.length === 1 ? parts[0] : `${parts[0]} and ${parts[1]}`;
+    return past ? `${joined} ago` : `in ${joined}`;
+  }
+
   private createTimeFormatter(): { formatter: DateFormatter; timeZone: string } {
     const systemZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     try {
@@ -672,7 +710,7 @@ export class TelegramCodexBridge {
       `Last rollout: ${this.lastRolloutPath ?? 'n/a'}`,
       `Working dir: ${this.config.codexCwd}`,
       `Server time zone: ${this.timeZoneLabel}`,
-      `Started: ${this.formatTimestamp(this.startedAt)}`,
+      `Started: ${this.formatRelativeDuration(this.startedAt)}`,
       `Last interaction: ${this.formatTimestamp(this.lastInteractionAt)}`,
       `Repo branch: ${this.getRepositoryBranch()}`,
       `Last commit: ${this.getRepositoryHead()}`,
