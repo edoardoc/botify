@@ -468,23 +468,7 @@ export class TelegramCodexBridge {
     }
 
     if (trimmed === '/status') {
-      void this.sendText(
-        [
-          `Codex ready: ${this.codexReady}`,
-          `Queue length: ${this.messageQueue.length}`,
-          `Active conversation: ${this.currentConversationId ?? 'none'}`,
-          `Last rollout: ${this.lastRolloutPath ?? 'n/a'}`,
-          `Working dir: ${this.config.codexCwd}`,
-          `Server time zone: ${this.timeZoneLabel}`,
-          `Started: ${this.formatTimestamp(this.startedAt)}`,
-          `Last interaction: ${this.formatTimestamp(this.lastInteractionAt)}`,
-          `Repo branch: ${this.getRepositoryBranch()}`,
-          `Last commit: ${this.getRepositoryHead()}`,
-          `Botify version: ${versionString}`,
-          `Model: ${this.config.model ?? 'default'}`,
-          `Sandbox: ${this.config.sandboxMode ?? 'n/a'}`,
-        ].join('\n'),
-      );
+      void this.sendText(this.getStatusReport());
       return;
     }
 
@@ -670,6 +654,28 @@ export class TelegramCodexBridge {
       };
       return { formatter: fallbackFormatter, timeZone: 'UTC' };
     }
+  }
+
+  getStatusReport(): string {
+    return this.buildStatusLines().join('\n');
+  }
+
+  private buildStatusLines(): string[] {
+    return [
+      `Codex ready: ${this.codexReady}`,
+      `Queue length: ${this.messageQueue.length}`,
+      `Active conversation: ${this.currentConversationId ?? 'none'}`,
+      `Last rollout: ${this.lastRolloutPath ?? 'n/a'}`,
+      `Working dir: ${this.config.codexCwd}`,
+      `Server time zone: ${this.timeZoneLabel}`,
+      `Started: ${this.formatTimestamp(this.startedAt)}`,
+      `Last interaction: ${this.formatTimestamp(this.lastInteractionAt)}`,
+      `Repo branch: ${this.getRepositoryBranch()}`,
+      `Last commit: ${this.getRepositoryHead()}`,
+      `Botify version: ${versionString}`,
+      `Model: ${this.config.model ?? 'default'}`,
+      `Sandbox: ${this.config.sandboxMode ?? 'n/a'}`,
+    ];
   }
 
   private getRepositoryBranch(): string {

@@ -24,7 +24,8 @@
     "prelint": "node ./scripts/write-version.mjs",
     "lint": "npx --yes -p typescript@5.4.5 tsc --noEmit -p tsconfig.json",
     "prepublishOnly": "npm run lint && npm run build",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "test": "npm run build && node --test tests/status.test.js"
   },
   "keywords": [
     "codex",

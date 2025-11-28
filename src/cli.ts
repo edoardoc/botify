@@ -20,6 +20,19 @@ async function main(): Promise<void> {
   }
 
   loadDotenv();
+
+  if (args.has('--status')) {
+    try {
+      const config = loadConfigFromEnv();
+      const bridge = new TelegramCodexBridge(config);
+      console.log(bridge.getStatusReport());
+      return;
+    } catch (err) {
+      console.error(`Failed to render status: ${(err as Error).message}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
   let bridge: TelegramCodexBridge | null = null;
   let unsubscribeFatal: (() => void) | null = null;
   let fatalHandled = false;
