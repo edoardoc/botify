@@ -10,7 +10,19 @@ interface MessageQueueItem {
   text: string;
   metadata: {
     from: string;
+    chatId: string;
+    replyToMessageId?: number;
   };
+}
+
+interface ChatSession {
+  chatId: string;
+  conversationId: string | null;
+  lastRolloutPath: string | null;
+  messageQueue: MessageQueueItem[];
+  processing: boolean;
+  warnedMissingConversationId: boolean;
+  missingConversationIdTimeout: NodeJS.Timeout | null;
 }
 
 interface RpcPending {
@@ -43,18 +55,14 @@ export class TelegramCodexBridge {
   private readonly logger: BridgeLogger;
   private codexProcess: ChildProcessWithoutNullStreams | null = null;
   private codexReady = false;
-  private currentConversationId: string | null = null;
-  private lastRolloutPath: string | null = null;
-  private processingQueue = false;
-  private warnedMissingConversationId = false;
-  private missingConversationIdTimeout: NodeJS.Timeout | null = null;
   private stdoutRl: readline.Interface | null = null;
   private pollLoopPromise: Promise<void> | null = null;
   private initPromise: Promise<void> | null = null;
   private running = false;
   private stopRequested = false;
 
-  private readonly messageQueue: MessageQueueItem[] = [];
+  private readonly sessions = new Map<string, ChatSession>();
+  private readonly sessionByConversationId = new Map<string, ChatSession>();
   private readonly rpcPending = new Map<string, RpcPending>();
   private rpcCounter = 1;
   private readonly recentTail: string[] = [];
@@ -65,6 +73,7 @@ export class TelegramCodexBridge {
   private readonly timeFormatter: DateFormatter;
   private readonly timeZoneLabel: string;
   private gitInfoWarningLogged = false;
+  private botUsername: string | null = null;
 
   constructor(private readonly config: BotifyConfig, logger?: BridgeLogger) {
     this.logger = logger ?? console;
@@ -102,6 +111,7 @@ export class TelegramCodexBridge {
     this.lastInteractionAt = null;
     ensureDirectory(this.config.codexHome);
     ensureDirectory(this.config.attachmentsDir);
+    await this.loadBotIdentity();
     const codexEnv = {
       ...process.env,
       CODEX_HOME: this.config.codexHome,
@@ -199,13 +209,6 @@ export class TelegramCodexBridge {
     }
     this.stopRequested = true;
 
-    if (this.missingConversationIdTimeout) {
-      clearTimeout(this.missingConversationIdTimeout);
-      this.missingConversationIdTimeout = null;
-    }
-
-    this.messageQueue.length = 0;
-
     if (this.stdoutRl) {
       this.stdoutRl.close();
       this.stdoutRl = null;
@@ -230,10 +233,7 @@ export class TelegramCodexBridge {
     }
 
     this.codexReady = false;
-    this.currentConversationId = null;
-    this.lastRolloutPath = null;
-    this.processingQueue = false;
-    this.warnedMissingConversationId = false;
+    this.resetAllSessions();
     this.startedAt = null;
     this.lastInteractionAt = null;
     this.running = false;
@@ -249,7 +249,7 @@ export class TelegramCodexBridge {
     await this.sendRpc('tools/list', {});
     this.codexReady = true;
     this.logger.info('Codex MCP server is ready.');
-    this.processQueue();
+    this.processAllQueues();
   }
 
   private handleCodexLine(line: string): void {
@@ -305,7 +305,7 @@ export class TelegramCodexBridge {
 
   private handleCodexNotification(message: CodexMessage): void {
     const { method, params } = message;
-    this.maybeUpdateConversationId(params);
+    this.maybeUpdateConversationIdFromPayload(params);
     if (method && method.startsWith('events/')) {
       this.appendTail(`${method}: ${JSON.stringify(params)}`);
       return;
@@ -408,7 +408,8 @@ export class TelegramCodexBridge {
     if (!message) {
       return;
     }
-    if (String(message.chat.id) !== String(this.config.chatId)) {
+    const chatId = String(message.chat.id);
+    if (chatId !== String(this.config.chatId)) {
       void this.apiRequest('sendMessage', {
         chat_id: message.chat.id,
         text: 'This bot is locked to a different chat.',
@@ -416,9 +417,10 @@ export class TelegramCodexBridge {
       return;
     }
 
+    const session = this.getSession(chatId);
     const attachments = this.extractAttachmentDescriptors(message);
     if (attachments.length) {
-      void this.handleFileAttachments(attachments).catch((err) => {
+      void this.handleFileAttachments(attachments, chatId).catch((err) => {
         this.logger.error(`Attachment processing error: ${err.message}`);
       });
     }
@@ -435,7 +437,9 @@ export class TelegramCodexBridge {
     }
 
     const trimmed = promptText.trim();
-    if (trimmed === '/help') {
+    const command = this.normalizeBotCommand(trimmed);
+
+    if (command === '/help') {
       void this.sendText(
         [
           'Codex Telegram Bridge (MCP mode)',
@@ -449,60 +453,113 @@ export class TelegramCodexBridge {
           '',
           'Any other message is forwarded to Codex via MCP.',
         ].join('\n'),
+        { chatId, replyToMessageId: message.message_id },
       );
       return;
     }
 
-    if (trimmed === '/ping') {
-      void this.sendText('pong');
+    if (command === '/ping') {
+      void this.sendText('pong', { chatId, replyToMessageId: message.message_id });
       return;
     }
 
-    if (trimmed === '/reset') {
-      this.currentConversationId = null;
-      this.lastRolloutPath = null;
-      this.messageQueue.length = 0;
-      this.processingQueue = false;
-      if (this.missingConversationIdTimeout) {
-        clearTimeout(this.missingConversationIdTimeout);
-        this.missingConversationIdTimeout = null;
-      }
-      this.warnedMissingConversationId = false;
-      void this.sendText('Conversation reset. Send a new prompt to start a fresh Codex session.');
+    if (command === '/reset') {
+      this.resetSession(session);
+      void this.sendText(
+        'Conversation reset. Send a new prompt to start a fresh Codex session.',
+        { chatId, replyToMessageId: message.message_id },
+      );
       return;
     }
 
-    if (trimmed === '/status') {
-      void this.sendText(this.getStatusReport());
+    if (command === '/status') {
+      void this.sendText(this.getStatusReport(chatId), {
+        chatId,
+        replyToMessageId: message.message_id,
+      });
       return;
     }
 
-    if (trimmed === '/relive') {
-      this.handleReliveCommand();
+    if (command === '/relive') {
+      this.handleReliveCommand(chatId);
       return;
     }
 
-    this.messageQueue.push({
-      text: promptText,
-      metadata: { from: message.from?.username || message.from?.first_name || 'user' },
+    const sanitized = this.normalizePromptInput(promptText);
+    if (!sanitized.length) {
+      return;
+    }
+
+    session.messageQueue.push({
+      text: sanitized,
+      metadata: {
+        from: message.from?.username || message.from?.first_name || 'user',
+        chatId,
+        replyToMessageId: message.message_id,
+      },
     });
-    this.processQueue();
+    this.processQueue(session);
   }
 
-  private processQueue(): void {
-    if (this.processingQueue || !this.codexReady) {
+  private normalizeBotCommand(text: string): string | null {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('/')) {
+      return null;
+    }
+    const match = trimmed.match(/^\/([a-zA-Z0-9_]+)(@\S+)?$/);
+    if (!match) {
+      return null;
+    }
+    const mention = match[2];
+    if (mention && !this.isMentionForBot(mention)) {
+      return null;
+    }
+    return `/${match[1]}`;
+  }
+
+  private normalizePromptInput(text: string): string {
+    let normalized = text.trim();
+    if (this.botUsername) {
+      const mentionPattern = new RegExp(`^@${escapeRegExp(this.botUsername)}\\b`, 'i');
+      normalized = normalized.replace(mentionPattern, '').trimStart();
+    }
+    normalized = normalized.replace(/^botify[\s,:-]+/i, '').trimStart();
+    return normalized;
+  }
+
+  private isMentionForBot(mention: string | undefined): boolean {
+    if (!mention) {
+      return true;
+    }
+    if (!this.botUsername) {
+      return true;
+    }
+    return mention.trim().toLowerCase() === `@${this.botUsername.toLowerCase()}`;
+  }
+
+  private processQueue(session: ChatSession): void {
+    if (session.processing || !this.codexReady) {
       return;
     }
-    const next = this.messageQueue.shift();
+    const next = session.messageQueue.shift();
     if (!next) {
       return;
     }
-    this.processingQueue = true;
-    this.handlePrompt(next.text)
-      .then((responseText) => this.sendText(responseText))
+    session.processing = true;
+    this.handlePrompt(session, next.text)
+      .then((responseText) =>
+        this.sendText(responseText, {
+          chatId: next.metadata.chatId,
+          replyToMessageId: next.metadata.replyToMessageId,
+        }),
+      )
       .catch((err: Error) => {
         this.logger.error(`Codex prompt failed: ${err.message}`);
         const message = err.message || String(err);
+        const sendOptions = {
+          chatId: next.metadata.chatId,
+          replyToMessageId: next.metadata.replyToMessageId,
+        };
         if (/^Codex RPC timeout/.test(message)) {
           void this.sendText(
             [
@@ -511,19 +568,26 @@ export class TelegramCodexBridge {
               'Increase CODEX_RPC_TIMEOUT_MS (set it to 0 to disable timeouts) or break the task into smaller steps.',
               'Use /status to check the active session.',
             ].join('\n'),
+            sendOptions,
           );
         } else {
-          void this.sendText(`Codex error: ${message}`);
-          this.currentConversationId = null;
+          void this.sendText(`Codex error: ${message}`, sendOptions);
+          this.setConversationId(session, null);
         }
       })
       .finally(() => {
-        this.processingQueue = false;
-        this.processQueue();
+        session.processing = false;
+        this.processQueue(session);
       });
   }
 
-  private async handlePrompt(prompt: string): Promise<string> {
+  private processAllQueues(): void {
+    for (const session of this.sessions.values()) {
+      this.processQueue(session);
+    }
+  }
+
+  private async handlePrompt(session: ChatSession, prompt: string): Promise<string> {
     this.markInteraction();
     const args: Record<string, unknown> = { prompt };
     if (this.config.sandboxMode) {
@@ -552,7 +616,7 @@ export class TelegramCodexBridge {
     }
 
     let result: any;
-    if (!this.currentConversationId) {
+    if (!session.conversationId) {
       result = await this.sendRpc('tools/call', {
         name: 'codex',
         arguments: args,
@@ -561,66 +625,126 @@ export class TelegramCodexBridge {
       result = await this.sendRpc('tools/call', {
         name: 'codex-reply',
         arguments: {
-          conversationId: this.currentConversationId,
+          conversationId: session.conversationId,
           prompt,
         },
       });
     }
 
     if (result?.rolloutPath) {
-      this.lastRolloutPath = result.rolloutPath;
+      session.lastRolloutPath = result.rolloutPath;
     }
     if (typeof result?.conversationId === 'string' && result.conversationId.trim().length) {
-      this.updateCurrentConversationId(result.conversationId.trim());
+      this.setConversationId(session, result.conversationId.trim());
     }
 
-    const updatedFromResult = this.maybeUpdateConversationId(result);
-    if (!updatedFromResult && !this.currentConversationId) {
-      this.scheduleMissingConversationWarning();
+    const updatedFromResult = this.maybeUpdateConversationIdForSession(session, result);
+    if (!updatedFromResult && !session.conversationId) {
+      this.scheduleMissingConversationWarning(session);
     }
 
     const formatted = renderResult(result);
 
     if (result?.isError) {
-      this.currentConversationId = null;
+      this.setConversationId(session, null);
       throw new Error(formatted || 'Codex reported an internal error.');
     }
 
     return formatted || '(Codex returned no content.)';
   }
 
-  private updateCurrentConversationId(conversationId: string): void {
-    this.currentConversationId = conversationId;
-    this.warnedMissingConversationId = false;
-    if (this.missingConversationIdTimeout) {
-      clearTimeout(this.missingConversationIdTimeout);
-      this.missingConversationIdTimeout = null;
+  private getSession(chatId: string): ChatSession {
+    let session = this.sessions.get(chatId);
+    if (!session) {
+      session = {
+        chatId,
+        conversationId: null,
+        lastRolloutPath: null,
+        messageQueue: [],
+        processing: false,
+        warnedMissingConversationId: false,
+        missingConversationIdTimeout: null,
+      };
+      this.sessions.set(chatId, session);
+    }
+    return session;
+  }
+
+  private resetSession(session: ChatSession): void {
+    session.messageQueue.length = 0;
+    session.processing = false;
+    session.lastRolloutPath = null;
+    session.warnedMissingConversationId = false;
+    this.setConversationId(session, null);
+    this.clearSessionTimeout(session);
+  }
+
+  private resetAllSessions(): void {
+    for (const session of this.sessions.values()) {
+      this.clearSessionTimeout(session);
+      if (session.conversationId) {
+        this.sessionByConversationId.delete(session.conversationId);
+      }
+    }
+    this.sessions.clear();
+    this.sessionByConversationId.clear();
+  }
+
+  private clearSessionTimeout(session: ChatSession): void {
+    if (session.missingConversationIdTimeout) {
+      clearTimeout(session.missingConversationIdTimeout);
+      session.missingConversationIdTimeout = null;
     }
   }
 
-  private maybeUpdateConversationId(payload: unknown): boolean {
+  private setConversationId(session: ChatSession, conversationId: string | null): void {
+    if (session.conversationId) {
+      this.sessionByConversationId.delete(session.conversationId);
+    }
+    session.conversationId = conversationId;
+    if (conversationId) {
+      this.sessionByConversationId.set(conversationId, session);
+      session.warnedMissingConversationId = false;
+      this.clearSessionTimeout(session);
+    }
+  }
+
+  private maybeUpdateConversationIdForSession(session: ChatSession, payload: unknown): boolean {
     const conversationId = extractConversationId(payload);
     if (!conversationId) {
       return false;
     }
-    this.updateCurrentConversationId(conversationId);
+    this.setConversationId(session, conversationId);
     return true;
   }
 
-  private scheduleMissingConversationWarning(): void {
-    if (this.warnedMissingConversationId || this.missingConversationIdTimeout) {
+  private maybeUpdateConversationIdFromPayload(payload: unknown): boolean {
+    const conversationId = extractConversationId(payload);
+    if (!conversationId) {
+      return false;
+    }
+    const session = this.sessionByConversationId.get(conversationId);
+    if (!session) {
+      return false;
+    }
+    this.setConversationId(session, conversationId);
+    return true;
+  }
+
+  private scheduleMissingConversationWarning(session: ChatSession): void {
+    if (session.warnedMissingConversationId || session.missingConversationIdTimeout) {
       return;
     }
-    this.missingConversationIdTimeout = setTimeout(() => {
-      this.missingConversationIdTimeout = null;
-      if (this.currentConversationId) {
+    session.missingConversationIdTimeout = setTimeout(() => {
+      session.missingConversationIdTimeout = null;
+      if (session.conversationId) {
         return;
       }
       const warning =
         '!!! WARNING: Codex did not return a conversation id. Follow-up prompts will start a fresh session unless you send /reset and restate your request.';
-      void this.sendText(warning);
+      void this.sendText(warning, { chatId: session.chatId });
       this.logger.warn('Codex response did not include a conversation id; follow-up prompts will start new sessions.');
-      this.warnedMissingConversationId = true;
+      session.warnedMissingConversationId = true;
     }, 300);
   }
 
@@ -698,16 +822,17 @@ export class TelegramCodexBridge {
     }
   }
 
-  getStatusReport(): string {
-    return this.buildStatusLines().join('\n');
+  getStatusReport(chatId: string = String(this.config.chatId)): string {
+    const session = this.sessions.get(chatId) ?? null;
+    return this.buildStatusLines(session).join('\n');
   }
 
-  private buildStatusLines(): string[] {
+  private buildStatusLines(session: ChatSession | null): string[] {
     return [
       `Codex ready: ${this.codexReady}`,
-      `Queue length: ${this.messageQueue.length}`,
-      `Active conversation: ${this.currentConversationId ?? 'none'}`,
-      `Last rollout: ${this.lastRolloutPath ?? 'n/a'}`,
+      `Queue length: ${session?.messageQueue.length ?? 0}`,
+      `Active conversation: ${session?.conversationId ?? 'none'}`,
+      `Last rollout: ${session?.lastRolloutPath ?? 'n/a'}`,
       `Working dir: ${this.config.codexCwd}`,
       `Server time zone: ${this.timeZoneLabel}`,
       `Started: ${this.formatRelativeDuration(this.startedAt)}`,
@@ -813,6 +938,23 @@ export class TelegramCodexBridge {
     this.logger.warn(message);
   }
 
+  private async loadBotIdentity(): Promise<void> {
+    if (this.botUsername) {
+      return;
+    }
+    try {
+      const response = await this.apiRequest('getMe');
+      if (response?.ok && typeof response.result?.username === 'string') {
+        this.botUsername = response.result.username;
+        this.logger.info(`Telegram bot username detected: @${this.botUsername}`);
+      } else {
+        this.logger.warn('Telegram getMe did not return a username; mentions will not be stripped automatically.');
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to fetch Telegram bot identity: ${(err as Error).message}`);
+    }
+  }
+
   private announceStartup(): void {
     const message = `Botify ${versionString} is online and ready.`;
     this.sendText(message).catch((err) => {
@@ -820,7 +962,7 @@ export class TelegramCodexBridge {
     });
   }
 
-  private handleReliveCommand(): void {
+  private handleReliveCommand(chatId: string): void {
     this.logger.warn('Received /relive command; preparing to exit.');
     const message = `I'll be back! Botify ${versionString} is shutting down so a newer build can come online in a few minutes.`;
     const finishShutdown = () => {
@@ -832,7 +974,7 @@ export class TelegramCodexBridge {
           process.exit(0);
         });
     };
-    void this.sendText(message)
+    void this.sendText(message, { chatId })
       .catch((err) => {
         this.logger.warn(`Failed to send /relive notice: ${(err as Error).message}`);
       })
@@ -863,7 +1005,7 @@ export class TelegramCodexBridge {
     return attachments;
   }
 
-  private async handleFileAttachments(descriptors: AttachmentDescriptor[]): Promise<void> {
+  private async handleFileAttachments(descriptors: AttachmentDescriptor[], chatId: string): Promise<void> {
     if (!descriptors.length) {
       return;
     }
@@ -889,12 +1031,15 @@ export class TelegramCodexBridge {
         }
         return absolutePath;
       });
-      await this.sendText(['Saved attachment(s):', ...displayPaths.map((p) => `- ${p}`)].join('\n'));
+      await this.sendText(['Saved attachment(s):', ...displayPaths.map((p) => `- ${p}`)].join('\n'), {
+        chatId,
+      });
     }
 
     if (failures.length) {
       await this.sendText(
         ['Failed to save attachment(s):', ...failures.map((line) => `- ${line}`)].join('\n'),
+        { chatId },
       );
     }
   }
@@ -958,15 +1103,23 @@ export class TelegramCodexBridge {
     });
   }
 
-  private async sendText(text: string): Promise<void> {
+  private async sendText(
+    text: string,
+    options?: { chatId?: string; replyToMessageId?: number },
+  ): Promise<void> {
+    const targetChat = options?.chatId ?? String(this.config.chatId);
     const chunks = chunkMessage(text, this.config.outputChunk);
     for (const chunk of chunks) {
-      const payload = {
-        chat_id: this.config.chatId,
+      const payload: Record<string, unknown> = {
+        chat_id: targetChat,
         text: `<pre>${escapeHtml(chunk)}</pre>`,
         parse_mode: 'HTML',
         disable_web_page_preview: true,
       };
+      if (options?.replyToMessageId) {
+        payload.reply_to_message_id = options.replyToMessageId;
+        payload.allow_sending_without_reply = true;
+      }
       const response = await this.apiRequest('sendMessage', payload);
       if (!response.ok) {
         this.logger.error(`Failed to send Telegram message: ${JSON.stringify(response)}`);
@@ -1151,6 +1304,10 @@ function sanitizeFileComponent(value: string): string {
 
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function ensureDirectory(dir: string): void {

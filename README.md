@@ -96,8 +96,19 @@ Codex creates `<host_project>/.codex_mcp_home/auth.json` during `codex login`. K
    ```
 4. If you do not see the chat listed, send another message to the bot and re-run the command; Telegram only returns chats with recent activity.
 
+### Group Chat Setup
+Botify is locked to a single `TELEGRAM_CHAT_ID`, so running it inside a Telegram group means everyone in that group shares the same Codex session, queue, and `/reset` state. To prepare a group chat:
+
+1. Create a new Telegram group (or pick an existing one) and add your teammates plus the bot created via `@BotFather`.
+2. In `@BotFather`, run `/setprivacy`, choose the bot, and select **Disable** so the bridge can see every group message without requiring repeated mentions. If you keep privacy enabled, members must reply to Botify or start their message with `@<botname>`/`Botify,` so the bridge receives the prompt.
+3. Send any message in the group so Telegram records the chat and then fetch the numeric id (usually negative, e.g., `-1001234567890`) using the `curl ... getUpdates` command above, `@userinfobot`, or `@RawDataBot`.
+4. Drop that id into `.env` as `TELEGRAM_CHAT_ID` and restart Botify. Every prompt sent in that group now flows through the same Codex conversation; `/reset` clears the session for the entire group.
+5. When chatting, group members can mention the bot (`@your_bot fix build`), reply directly to its previous answer, or simply type `Botify, ...` to ensure the bridge routes the text even if privacy mode stays enabled. The bridge automatically strips those prefixes before forwarding prompts to Codex.
+
+Because the queue is serialized per chat, multiple users can send prompts without colliding, but Codex will answer them sequentially. If you want multiple groups, run separate Botify instances, each configured with a different `TELEGRAM_CHAT_ID`.
+
 ## Usage
-Start the bridge with `./botify/scripts/start-bot.sh` (submodule) or `botify` (global CLI), then interact with it through Telegram commands:
+Start the bridge with `./botify/scripts/start-bot.sh` (submodule) or `botify` (global CLI), then interact with it through Telegram commands. In group chats every participant shares the same Codex history and queue; Botify replies inline to the message that triggered a response and automatically ignores the leading `@<botname>`/`Botify,` prefixes that Telegram injects in mentions or replies.
 
 | Command | Description |
 | --- | --- |
