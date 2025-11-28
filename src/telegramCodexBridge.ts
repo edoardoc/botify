@@ -144,7 +144,12 @@ export class TelegramCodexBridge {
         tail,
         'Restart the bridge once the underlying issue is resolved.',
       ].join('\n');
-      this.logger.error(diagnostic);
+      const abnormalExit = Boolean(signal) || (typeof code === 'number' && code !== 0);
+      if (abnormalExit) {
+        this.logger.error(diagnostic);
+      } else {
+        this.logger.info(`Codex MCP server exited cleanly (${reason}).`);
+      }
       const exitQuip = signal
         ? `Codex MCP server yeeted itself after catching ${signal}. Please restart me once it's safe.`
         : code === 0
