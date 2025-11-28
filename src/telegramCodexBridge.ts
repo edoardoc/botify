@@ -712,7 +712,7 @@ export class TelegramCodexBridge {
   private getRepositoryHead(): string {
     const root = this.config.codexCwd || process.cwd();
     try {
-      const output = execSync('git log -1 --pretty=format:%h%x20%s%x20%C(yellow)(%cr)', {
+      const output = execSync('git log -1 --pretty=format:%h%x20%s%x20', {
         cwd: root,
         stdio: ['ignore', 'pipe', 'ignore'],
         encoding: 'utf8',
