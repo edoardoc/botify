@@ -23,6 +23,7 @@ interface ChatSession {
   processing: boolean;
   warnedMissingConversationId: boolean;
   missingConversationIdTimeout: NodeJS.Timeout | null;
+  lastInteractionAt: Date | null;
 }
 
 interface RpcPending {
@@ -589,6 +590,7 @@ export class TelegramCodexBridge {
 
   private async handlePrompt(session: ChatSession, prompt: string): Promise<string> {
     this.markInteraction();
+    session.lastInteractionAt = new Date();
     const args: Record<string, unknown> = { prompt };
     if (this.config.sandboxMode) {
       args.sandbox = this.config.sandboxMode;
@@ -664,6 +666,7 @@ export class TelegramCodexBridge {
         processing: false,
         warnedMissingConversationId: false,
         missingConversationIdTimeout: null,
+        lastInteractionAt: null,
       };
       this.sessions.set(chatId, session);
     }
@@ -677,6 +680,7 @@ export class TelegramCodexBridge {
     session.warnedMissingConversationId = false;
     this.setConversationId(session, null);
     this.clearSessionTimeout(session);
+    session.lastInteractionAt = null;
   }
 
   private resetAllSessions(): void {
@@ -723,12 +727,32 @@ export class TelegramCodexBridge {
     if (!conversationId) {
       return false;
     }
-    const session = this.sessionByConversationId.get(conversationId);
+    const session =
+      this.sessionByConversationId.get(conversationId) || this.findMostRecentSessionWithoutConversationId();
     if (!session) {
       return false;
     }
     this.setConversationId(session, conversationId);
     return true;
+  }
+
+  private findMostRecentSessionWithoutConversationId(): ChatSession | null {
+    let candidate: ChatSession | null = null;
+    for (const session of this.sessions.values()) {
+      if (session.conversationId) {
+        continue;
+      }
+      if (!candidate) {
+        candidate = session;
+        continue;
+      }
+      const candidateTime = candidate.lastInteractionAt?.getTime() ?? 0;
+      const sessionTime = session.lastInteractionAt?.getTime() ?? 0;
+      if (sessionTime > candidateTime) {
+        candidate = session;
+      }
+    }
+    return candidate;
   }
 
   private scheduleMissingConversationWarning(session: ChatSession): void {
@@ -1107,7 +1131,7 @@ export class TelegramCodexBridge {
     text: string,
     options?: { chatId?: string; replyToMessageId?: number },
   ): Promise<void> {
-    const targetChat = options?.chatId ?? String(this.config.chatId);
+    const targetChat = options?.chatId ?? this.config.chatId;
     const chunks = chunkMessage(text, this.config.outputChunk);
     for (const chunk of chunks) {
       const payload: Record<string, unknown> = {
