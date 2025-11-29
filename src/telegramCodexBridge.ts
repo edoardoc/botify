@@ -1,9 +1,10 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { BotifyConfig, BridgeLogger } from './types.js';
+import { versionString } from './version.js';
 
 interface MessageQueueItem {
   text: string;
@@ -34,6 +35,10 @@ interface AttachmentDescriptor {
   suggestedName?: string;
 }
 
+interface DateFormatter {
+  format: (value: Date) => string;
+}
+
 export class TelegramCodexBridge {
   private readonly logger: BridgeLogger;
   private codexProcess: ChildProcessWithoutNullStreams | null = null;
@@ -57,9 +62,15 @@ export class TelegramCodexBridge {
   private fatalEmitted = false;
   private startedAt: Date | null = null;
   private lastInteractionAt: Date | null = null;
+  private readonly timeFormatter: DateFormatter;
+  private readonly timeZoneLabel: string;
+  private gitInfoWarningLogged = false;
 
   constructor(private readonly config: BotifyConfig, logger?: BridgeLogger) {
     this.logger = logger ?? console;
+    const { formatter, timeZone } = this.createTimeFormatter();
+    this.timeFormatter = formatter;
+    this.timeZoneLabel = timeZone;
   }
 
   onFatal(handler: (error: Error) => void): () => void {
@@ -125,18 +136,28 @@ export class TelegramCodexBridge {
     });
 
     codexProcess.on('exit', (code, signal) => {
-      const reason = signal ? `signal ${signal}` : `code ${code}`;
+      const reason = signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`;
       const tail = this.recentTail.length ? this.recentTail.join('\n') : 'No buffered output.';
-      const message = [
+      const diagnostic = [
         `Codex MCP server exited (${reason}).`,
         'Recent output:',
         tail,
         'Restart the bridge once the underlying issue is resolved.',
       ].join('\n');
-      this.logger.error(message);
-      void this.notifyOwner(message);
+      const abnormalExit = Boolean(signal) || (typeof code === 'number' && code !== 0);
+      if (abnormalExit) {
+        this.logger.error(diagnostic);
+      } else {
+        this.logger.info(`Codex MCP server exited cleanly (${reason}).`);
+      }
+      const exitQuip = signal
+        ? `Codex MCP server yeeted itself after catching ${signal}. Please restart me once it's safe.`
+        : code === 0
+          ? 'Codex MCP server clocked out politely (code 0). Summon me again when you need more magic.'
+          : `Codex MCP server dramatically face-planted with exit code ${code ?? 'unknown'}. Please restart when ready.`;
+      void this.notifyOwner(exitQuip);
       if (!this.stopRequested) {
-        this.emitFatal(new Error(message));
+        this.emitFatal(new Error(diagnostic));
       }
       void this.stop();
     });
@@ -169,6 +190,7 @@ export class TelegramCodexBridge {
     });
 
     await this.initPromise;
+    this.announceStartup();
   }
 
   async stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
@@ -220,7 +242,7 @@ export class TelegramCodexBridge {
   private async initCodex(): Promise<void> {
     await this.sendRpc('initialize', {
       protocolVersion: '2024-10-07',
-      clientInfo: { name: 'telegram-bridge', version: '0.1.0' },
+      clientInfo: { name: 'telegram-bridge', version: versionString },
       capabilities: {},
     });
     this.sendNotification('initialized', {});
@@ -422,6 +444,7 @@ export class TelegramCodexBridge {
           '/ping   – heartbeat',
           '/reset  – drop the active Codex session',
           '/status – show server status',
+          '/relive – gracefully exit so a new build can start',
           '/help   – this message',
           '',
           'Any other message is forwarded to Codex via MCP.',
@@ -450,19 +473,12 @@ export class TelegramCodexBridge {
     }
 
     if (trimmed === '/status') {
-      void this.sendText(
-        [
-          `Codex ready: ${this.codexReady}`,
-          `Queue length: ${this.messageQueue.length}`,
-          `Active conversation: ${this.currentConversationId ?? 'none'}`,
-          `Last rollout: ${this.lastRolloutPath ?? 'n/a'}`,
-          `Working dir: ${this.config.codexCwd}`,
-          `Started: ${this.formatTimestamp(this.startedAt)}`,
-          `Last interaction: ${this.formatTimestamp(this.lastInteractionAt)}`,
-          `Model: ${this.config.model ?? 'default'}`,
-          `Sandbox: ${this.config.sandboxMode ?? 'n/a'}`,
-        ].join('\n'),
-      );
+      void this.sendText(this.getStatusReport());
+      return;
+    }
+
+    if (trimmed === '/relive') {
+      this.handleReliveCommand();
       return;
     }
 
@@ -616,7 +632,211 @@ export class TelegramCodexBridge {
     if (!value) {
       return 'n/a';
     }
-    return value.toISOString();
+    try {
+      return `${this.timeFormatter.format(value)} (${this.timeZoneLabel})`;
+    } catch (err) {
+      this.logger.warn(`Failed to format timestamp: ${(err as Error).message}`);
+      return value.toISOString();
+    }
+  }
+
+  private formatRelativeDuration(value: Date | null): string {
+    if (!value) {
+      return 'n/a';
+    }
+    const diffMs = Date.now() - value.getTime();
+    if (diffMs === 0) {
+      return 'just now';
+    }
+    const past = diffMs > 0;
+    const absMs = Math.abs(diffMs);
+    const units = [
+      { label: 'year', ms: 31_536_000_000 },
+      { label: 'month', ms: 2_592_000_000 },
+      { label: 'day', ms: 86_400_000 },
+      { label: 'hour', ms: 3_600_000 },
+      { label: 'minute', ms: 60_000 },
+      { label: 'second', ms: 1_000 },
+    ];
+    const parts: string[] = [];
+    let remainder = absMs;
+    for (const unit of units) {
+      const amount = Math.floor(remainder / unit.ms);
+      if (amount > 0) {
+        const label = `${unit.label}${amount === 1 ? '' : 's'}`;
+        parts.push(`${amount} ${label}`);
+        remainder -= amount * unit.ms;
+      }
+      if (parts.length === 2) {
+        break;
+      }
+    }
+    if (!parts.length) {
+      return past ? 'just now' : 'any moment now';
+    }
+    const joined = parts.length === 1 ? parts[0] : `${parts[0]} and ${parts[1]}`;
+    return past ? `${joined} ago` : `in ${joined}`;
+  }
+
+  private createTimeFormatter(): { formatter: DateFormatter; timeZone: string } {
+    const systemZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    try {
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        dateStyle: 'medium',
+        timeStyle: 'medium',
+        hour12: false,
+        timeZone: systemZone,
+        timeZoneName: 'short',
+      });
+      const resolved = formatter.resolvedOptions().timeZone || systemZone;
+      return { formatter, timeZone: resolved };
+    } catch (err) {
+      const fallbackFormatter: DateFormatter = {
+        format: (value: Date) => value.toISOString(),
+      };
+      return { formatter: fallbackFormatter, timeZone: 'UTC' };
+    }
+  }
+
+  getStatusReport(): string {
+    return this.buildStatusLines().join('\n');
+  }
+
+  private buildStatusLines(): string[] {
+    return [
+      `Codex ready: ${this.codexReady}`,
+      `Queue length: ${this.messageQueue.length}`,
+      `Active conversation: ${this.currentConversationId ?? 'none'}`,
+      `Last rollout: ${this.lastRolloutPath ?? 'n/a'}`,
+      `Working dir: ${this.config.codexCwd}`,
+      `Server time zone: ${this.timeZoneLabel}`,
+      `Started: ${this.formatRelativeDuration(this.startedAt)}`,
+      `Last interaction: ${this.formatTimestamp(this.lastInteractionAt)}`,
+      `Repo branch: ${this.getRepositoryBranch()}`,
+      `Last commit: ${this.getRepositoryHead()}`,
+      `Botify version: ${versionString}`,
+      `Model: ${this.config.model ?? 'default'}`,
+      `Sandbox: ${this.config.sandboxMode ?? 'n/a'}`,
+    ];
+  }
+
+  private getRepositoryBranch(): string {
+    const root = this.config.codexCwd || process.cwd();
+    try {
+      const output = execSync('git rev-parse --abbrev-ref HEAD', {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf8',
+      }).trim();
+      if (output) {
+        return output;
+      }
+    } catch (err) {
+      this.logGitWarning(`Failed to read git branch via git: ${(err as Error).message}`);
+    }
+    const gitDir = this.getGitDirectory(root);
+    if (!gitDir) {
+      return 'unknown';
+    }
+    try {
+      const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+      if (head.startsWith('ref:')) {
+        const ref = head.slice(5).trim();
+        const parts = ref.split('/');
+        return parts[parts.length - 1] || ref;
+      }
+      return head ? '(detached HEAD)' : 'unknown';
+    } catch (err) {
+      this.logGitWarning(`Failed to parse .git/HEAD: ${(err as Error).message}`);
+      return 'unknown';
+    }
+  }
+
+  private getRepositoryHead(): string {
+    const root = this.config.codexCwd || process.cwd();
+    try {
+      const output = execSync('git log -1 --pretty=format:%h%x20%s%x20', {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf8',
+      }).trim();
+      if (output) {
+        return output;
+      }
+    } catch (err) {
+      this.logGitWarning(`Failed to read git head via git: ${(err as Error).message}`);
+    }
+    const gitDir = this.getGitDirectory(root);
+    if (!gitDir) {
+      return 'unknown';
+    }
+    try {
+      const headContent = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+      if (headContent.startsWith('ref:')) {
+        const ref = headContent.slice(5).trim();
+        const refPath = path.join(gitDir, ref);
+        const hash = fs.readFileSync(refPath, 'utf8').trim();
+        return hash ? `${hash.slice(0, 7)} (message unavailable)` : 'unknown';
+      }
+      return headContent ? `${headContent.slice(0, 7)} (detached)` : 'unknown';
+    } catch (err) {
+      this.logGitWarning(`Failed to resolve git head: ${(err as Error).message}`);
+      return 'unknown';
+    }
+  }
+
+  private getGitDirectory(root: string): string | null {
+    const dotGitPath = path.join(root, '.git');
+    try {
+      const stats = fs.statSync(dotGitPath);
+      if (stats.isDirectory()) {
+        return dotGitPath;
+      }
+      if (stats.isFile()) {
+        const content = fs.readFileSync(dotGitPath, 'utf8');
+        const match = content.trim().match(/^gitdir:\s*(.+)$/i);
+        if (match) {
+          return path.resolve(root, match[1]);
+        }
+      }
+    } catch (err) {
+      this.logGitWarning(`Failed to locate .git directory: ${(err as Error).message}`);
+    }
+    return null;
+  }
+
+  private logGitWarning(message: string): void {
+    if (this.gitInfoWarningLogged) {
+      return;
+    }
+    this.gitInfoWarningLogged = true;
+    this.logger.warn(message);
+  }
+
+  private announceStartup(): void {
+    const message = `Botify ${versionString} is online and ready.`;
+    this.sendText(message).catch((err) => {
+      this.logger.warn(`Failed to send startup announcement: ${(err as Error).message}`);
+    });
+  }
+
+  private handleReliveCommand(): void {
+    this.logger.warn('Received /relive command; preparing to exit.');
+    const message = `I'll be back! Botify ${versionString} is shutting down so a newer build can come online in a few minutes.`;
+    const finishShutdown = () => {
+      void this.stop('SIGTERM')
+        .catch((err) => {
+          this.logger.warn('Relive shutdown encountered an error.', err as Error);
+        })
+        .finally(() => {
+          process.exit(0);
+        });
+    };
+    void this.sendText(message)
+      .catch((err) => {
+        this.logger.warn(`Failed to send /relive notice: ${(err as Error).message}`);
+      })
+      .finally(() => finishShutdown());
   }
 
   private extractAttachmentDescriptors(message: any): AttachmentDescriptor[] {

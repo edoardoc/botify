@@ -1,5 +1,7 @@
 # Botify
 
+![Botify logo](assets/botify-logo-minimal.svg)
+
 Reusable Telegram ↔ Codex bridge that can be dropped into any repository. 
 
 ## Features
@@ -8,52 +10,47 @@ Reusable Telegram ↔ Codex bridge that can be dropped into any repository.
 - Configurable sandbox, approval policy, Codex profile/model, and prompt overrides.
 - Graceful shutdown and rich status/help commands exposed via Telegram.
 
-## Quick Start
+## Installation
+
+Choose the installation approach that best fits your workflow.
+
+### Git Submodule
 1. `git submodule add git@github.com:edoardoc/botify.git`
-2. do a `npm install` inside the `botify/` folder
-3. make sure you have a `<host_project>/.codex_mcp_home/auth.json` with something valid inside
-4. launch botify from the <host_project> folder with `./botify/scripts/start-bot.sh`
+2. Run `npm install` inside the `botify/` folder.
+3. Make sure `<host_project>/.codex_mcp_home/auth.json` contains valid Codex credentials.
+4. Launch Botify from the `<host_project>` folder with `./botify/scripts/start-bot.sh`.
 
-## Details
+The launcher script reads `.env`, boots the compiled bridge, and mirrors output to `./logs/botify.log` (override via `BOTIFY_LOG_PATH=/custom/path.log`). Run it from the host project root so relative paths match—asking the bot to list the folder is a quick sanity check.
 
-### Git Submodule Integration
-Inside the host project, add a submodule: `git submodule add git@github.com:edoardoc/botify.git`
+### Global npm CLI
+1. Install the CLI once: `npm install -g github:edoardoc/botify` (or `npm install -g git+ssh://git@github.com/edoardoc/botify.git`).
+2. Inside each host project, create a `.env` file using `.env.example` as a template.
+3. Populate the required environment variables (see the configuration table below).
+4. From the host project root, run `botify` to start the bridge. It treats the current directory as `CODEX_CWD` and writes artifacts to `<project>/.codex_mcp_home/`.
+5. Optional: set `BOTIFY_LOG_PATH=./logs/botify.log botify` to tee output into your repo log directory.
+6. Update later via `npm update -g botify`; `botify --version` shows the installed branch/commit.
 
-### Env and activations
+```bash
+npm install -g github:edoardoc/botify
+
+# inside a host repo
+BOTIFY_LOG_PATH=./logs/botify.log botify
+```
+
+> ℹ️ **Installing straight from GitHub.** npm 11 currently links git-based installs into a temporary cache directory and cleans that cache immediately, which prevents the `botify` binary from landing in `~/.npm-global/bin`. To ensure a working CLI:
+> 1. Clone the repo and check out the desired branch (`git clone git@github.com:edoardoc/botify.git && cd botify`).
+> 2. Run `npm install` to build `dist/`.
+> 3. Install from disk: `npm install -g .`
+>
+> Alternatively, pack the repository first (`npm pack github:edoardoc/botify#humanize`) and install the resulting `botify-0.1.0.tgz`. In both cases, verify `~/.npm-global/bin` (or your chosen npm prefix) is on `PATH` so the `botify` shim is discoverable.
+
+## Configuration
 1. Copy `.env.example` to `.env` and fill in the required variables:
    - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are mandatory.
-   - Optional Codex overrides (command, sandbox, approval policy, etc.) can stay commented out.
+   - Optional Codex overrides (command, sandbox, approval policy, etc.) can stay commented out until needed.
+2. Export the `.env` or run the launcher/CLI from the same directory so it can auto-load the file.
 
-Once the process is running, chat with your Telegram bot. Any non-command message is forwarded to Codex and the response is streamed back as formatted text.
-
-## Bot Launcher Script
-From the host project root, run `./botify/scripts/start-bot.sh` to load `.env`, boot the compiled bridge, and mirror all output to `./logs/botify.log` (created automatically). Override the log destination with `BOTIFY_LOG_PATH=/custom/path.log` if you prefer a different location.
-Before interacting with the bot make sure it was invoked from the host directory (just ask it to list the folder)
-
-### Codes Authorization
-Codex will create a `<host_project>/.codex_mcp_home/` where a file `auth.json` should be present (after codex login that file is created)
-
-## Obtaining Telegram Keys
-1. DM `@BotFather`, run `/newbot`, follow the prompts, and copy the resulting `TELEGRAM_BOT_TOKEN`.
-2. Start a chat with the bot (or add it to a group) and send a dummy message.
-3. Grab the chat identifier with `curl "https://api.telegram.org/bot<token>/getUpdates"` or `@userinfobot`; the numeric `id` becomes `TELEGRAM_CHAT_ID`.
-4. Drop both values into `.env` or export them in your shell before launching the bridge.
-5. Optional: `/setprivacy` in `@BotFather` if the bot needs to see all group messages.
-
-### Finding your `TELEGRAM_CHAT_ID`
-1. Replace `<token>` with your bot token and run:
-   ```bash
-   curl "https://api.telegram.org/bot<token>/getUpdates"
-   ```
-2. Locate the most recent `message.chat.id` in the JSON response. That value (often negative for groups) is the `TELEGRAM_CHAT_ID`.
-3. Optionally, pipe the result through `jq` to extract the id quickly:
-   ```bash
-   curl "https://api.telegram.org/bot<token>/getUpdates" | jq '.result[0].message.chat.id'
-   ```
-4. If you do not see the chat listed, send another message to the bot and re-run the command; Telegram only returns chats with recent activity.
-
-## Configuration Reference
-All options are read from environment variables and have sensible defaults aligned with the original bridge:
+Botify reads all settings from environment variables; defaults align with the original bridge:
 
 | Variable | Description | Default |
 | --- | --- | --- |
@@ -75,21 +72,67 @@ All options are read from environment variables and have sensible defaults align
 | `CODEX_EXIT_LOG_LINES` | Buffered lines from Codex logs for crash reports | `40` |
 | `CODEX_OUTPUT_CHUNK` | Telegram message chunk size | `3500` |
 
-### Attachment Handling
+## Credentials & Authorization
+
+### Codex Authorization
+Codex creates `<host_project>/.codex_mcp_home/auth.json` during `codex login`. Keep that file in sync with the bridge. If you see `Your access token could not be refreshed because your refresh token was already used`, run `codex logout && codex login` (or `codex auth login`) and copy the freshly generated `auth.json` back into this project before restarting Botify.
+
+### Obtaining Telegram Keys
+1. DM `@BotFather`, run `/newbot`, follow the prompts, and copy the resulting `TELEGRAM_BOT_TOKEN`.
+2. Start a chat with the bot (or add it to a group) and send a dummy message.
+3. Grab the chat identifier with `curl "https://api.telegram.org/bot<token>/getUpdates"` or `@userinfobot`; the numeric `id` becomes `TELEGRAM_CHAT_ID`.
+4. Drop both values into `.env` or export them in your shell before launching the bridge.
+5. Optional: `/setprivacy` in `@BotFather` if the bot needs to see all group messages.
+
+#### Finding your `TELEGRAM_CHAT_ID`
+1. Replace `<token>` with your bot token and run:
+   ```bash
+   curl "https://api.telegram.org/bot<token>/getUpdates"
+   ```
+2. Locate the most recent `message.chat.id` in the JSON response. That value (often negative for groups) is the `TELEGRAM_CHAT_ID`.
+3. Optionally, pipe the result through `jq` to extract the id quickly:
+   ```bash
+   curl "https://api.telegram.org/bot<token>/getUpdates" | jq '.result[0].message.chat.id'
+   ```
+4. If you do not see the chat listed, send another message to the bot and re-run the command; Telegram only returns chats with recent activity.
+
+## Usage
+Start the bridge with `./botify/scripts/start-bot.sh` (submodule) or `botify` (global CLI), then interact with it through Telegram commands:
+
+| Command | Description |
+| --- | --- |
+| `/help` | Show command list and a short bridge description. |
+| `/ping` | Quick heartbeat that replies with `pong`. |
+| `/status` | Report Codex readiness, queue length, timestamps, sandbox, and Botify version. |
+| `/reset` | Drop the active Codex conversation and clear pending prompts. |
+| `/relive` | Notify the chat that Botify is shutting down and exit with code 0 so a new build can restart. |
+| (any other text) | Relayed to Codex via MCP; responses stream back as formatted messages. |
+
+## Version Information
+Every build captures the current Git branch and commit in `version-meta.json` and exposes it through the CLI, so you always know if you're running a tailored build of the tool:
+- `botify --version` (or `botify -v`) prints `semver+branch.commit`, making it easy to audit what was installed globally.
+- The same version string is advertised to Codex in the `clientInfo` payload so remote sessions can also see which build is active.
+If Git metadata is unavailable during installation, the CLI falls back to the base `package.json` version and marks branch/commit as `unknown`.
+
+## Attachment Handling
 - Any Telegram document or photo sent to the bot is downloaded immediately and stored inside `BOTIFY_ATTACHMENTS_DIR` (default `./uploads` relative to the Codex CWD).
 - Add this directory to your `.gitignore` (already ignored by default) so large binaries never end up in version control.
-- When a file is saved, the bot sends back the relative path so you can reference it in follow-up prompts (e.g. “use `uploads/photo-abc123.jpg` as the hero image”).
+- When a file is saved, the bot sends back the relative path so you can reference it in follow-up prompts (e.g., “use `uploads/photo-abc123.jpg` as the hero image”).
 
 
-## Booting bots on macos
+## macOS Launch Agent
 
-Change file `start_all_bots.sh` with the bots you created, then change all absolute paths `/Users/eddy/...` with your paths in `com.500nits.startbots.plist` then do a:
+Change file `<YOUR_PATH>/projects/botify/.local/bin/start_all_bots.sh` with the bots you created, then change all absolute paths `/Users/eddy/...` with your paths in `com.botify.startbots.plist` then do a:
 
 ```
 chmod +x ~/projects/botify/.local/bin/start_all_bots.sh
-launchctl unload ~/Library/LaunchAgents/com.500nits.startbots.plist 2>/dev/null || true
-launchctl load  ~/Library/LaunchAgents/com.500nits.startbots.plist
-launchctl start com.500nits.startbots
+launchctl unload ~/Library/LaunchAgents/com.botify.startbots.plist 2>/dev/null || true
+launchctl load  ~/Library/LaunchAgents/com.botify.startbots.plist
+launchctl start com.botify.startbots
 ```
 
 this will start all your bots at every boot
+
+<p align="right">
+  <img src="assets/botify-logo-stack.svg" alt="Stacked Botify logo" width="220" />
+</p>
