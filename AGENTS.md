@@ -33,5 +33,8 @@ This keeps the Telegram bridge aligned with the latest satisfied request, reduci
 ## Commit & Pull Request Guidelines
 History currently contains a single `initial commit`; adopt concise, imperative summaries (e.g., `feat: add rollout retry logging`). Reference related issues in the body, list environment variables required for validation, and attach logs or screenshots when behavior changes. PRs should describe risk areas, manual test evidence, and any follow-up work so the release checklist stays lightweight.
 
+### Documentation-Only Updates
+When a request only affects docs, text output, or other informational content (no functional/runtime changes), edit the files directly on the main branch, commit locally, and push immediately—no feature branches or batching with unrelated work.
+
 ## Security & Configuration Tips
 Never commit secrets such as `TELEGRAM_BOT_TOKEN` or `CODEX_HOME` artifacts. Store environment variables in your shell or an untracked `.env.local`. When sharing debug output, redact chat IDs and Codex paths. If you modify configuration defaults in `src/config.ts`, double-check that onboarding instructions stay accurate in `README.md`.

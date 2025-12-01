@@ -133,16 +133,69 @@ If Git metadata is unavailable during installation, the CLI falls back to the ba
 
 ## macOS Launch Agent
 
-Change file `<YOUR_PATH>/projects/botify/.local/bin/start_all_bots.sh` with the bots you created, then change all absolute paths `/Users/eddy/...` with your paths in `com.botify.startbots.plist` then do a:
+Use a Launch Agent when you want Botify (or several bots) to boot automatically whenever you log into macOS. The process involves two files: a shell launcher that starts every bot you care about, and a `~/Library/LaunchAgents` plist that keeps that script running.
 
-```
-chmod +x ~/projects/botify/.local/bin/start_all_bots.sh
-launchctl unload ~/Library/LaunchAgents/com.botify.startbots.plist 2>/dev/null || true
-launchctl load  ~/Library/LaunchAgents/com.botify.startbots.plist
-launchctl start com.botify.startbots
-```
+1. **Create the launcher script.** Save the following template as `~/projects/botify/.local/bin/start_all_bots.sh`, update the `BOT_PROJECTS` array so each entry points to a repository that contains its own `.env` and Botify config, and add/remove entries as needed.
 
-this will start all your bots at every boot
+   ```bash
+   #!/usr/bin/env bash
+   set -euo pipefail
+
+   BOT_PROJECTS=(
+     "/Users/you/projects/botify-demo"
+     "/Users/you/projects/another-app"
+   )
+
+   for project in "${BOT_PROJECTS[@]}"; do
+     (
+       cd "$project"
+       source .env.local
+       BOTIFY_LOG_PATH="$project/logs/botify.log" botify >> "$project/logs/botify.log" 2>&1 &
+     )
+   done
+   wait
+   ```
+
+   Customize the snippet to run any preparation commands (e.g., `npm install`) before `botify`. The script should end with `wait` so launchd knows when the background processes exit.
+
+2. **Make the script executable.**
+
+   ```bash
+   chmod +x ~/projects/botify/.local/bin/start_all_bots.sh
+   ```
+
+3. **Create the Launch Agent.** Save `~/Library/LaunchAgents/com.botify.startbots.plist` with your absolute paths (replace `/Users/you/...` as needed):
+
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+     <dict>
+       <key>Label</key>
+       <string>com.botify.startbots</string>
+       <key>ProgramArguments</key>
+       <array>
+         <string>/Users/you/projects/botify/.local/bin/start_all_bots.sh</string>
+       </array>
+       <key>RunAtLoad</key>
+       <true/>
+       <key>StandardOutPath</key>
+       <string>/Users/you/projects/botify/logs/launch-agent.log</string>
+       <key>StandardErrorPath</key>
+       <string>/Users/you/projects/botify/logs/launch-agent.log</string>
+     </dict>
+   </plist>
+   ```
+
+4. **Load or reload the agent whenever you change either file:**
+
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/com.botify.startbots.plist 2>/dev/null || true
+   launchctl load ~/Library/LaunchAgents/com.botify.startbots.plist
+   launchctl start com.botify.startbots
+   ```
+
+With that in place, macOS will rerun `start_all_bots.sh` automatically every time you log in, so each listed repository launches its own Botify instance without manual intervention.
 
 <p align="right">
   <img src="assets/botify-logo-stack.svg" alt="Stacked Botify logo" width="220" />
