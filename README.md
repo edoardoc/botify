@@ -101,7 +101,10 @@ Botify is locked to a single `TELEGRAM_CHAT_ID`, so running it inside a Telegram
 
 1. Create a new Telegram group (or pick an existing one) and add your teammates plus the bot created via `@BotFather`.
 2. In `@BotFather`, run `/setprivacy`, choose the bot, and select **Disable** so the bridge can see every group message without requiring repeated mentions. If you keep privacy enabled, members must reply to Botify or start their message with `@<botname>`/`Botify,` so the bridge receives the prompt.
-3. Send any message in the group so Telegram records the chat and then fetch the numeric id (usually negative, e.g., `-1001234567890`) using the `curl ... getUpdates` command above, `@userinfobot`, or `@RawDataBot`.
+3. Send any message in the group so Telegram records the chat and then fetch the numeric id (usually negative, e.g., `-1001234567890`). Use whichever method is easiest:
+   - `curl ... getUpdates`: rerun the command from the previous section with your bot token and read the latest `message.chat.id`.
+   - `@userinfobot`: forward a recent group message to this bot (or invite it briefly and run `/start`) and copy the `Chat ID` value it replies with.
+   - `@RawDataBot`: forward a recent group message to the bot and grab the `chat.id` field from the JSON payload it returns.
 4. Drop that id into `.env` as `TELEGRAM_CHAT_ID` and restart Botify. Every prompt sent in that group now flows through the same Codex conversation; `/reset` clears the session for the entire group.
 5. When chatting, group members can mention the bot (`@your_bot fix build`), reply directly to its previous answer, or simply type `Botify, ...` to ensure the bridge routes the text even if privacy mode stays enabled. The bridge automatically strips those prefixes before forwarding prompts to Codex.
 
