@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1-}" == "login" && "${2-}" == "status" ]]; then
+  echo "Test Codex login status OK"
+  exit 0
+fi
+# For other commands we only need to log and exit cleanly.
+echo "codex stub invoked: $*" >&2
+exit 0

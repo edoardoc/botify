@@ -25,7 +25,8 @@ async function main(): Promise<void> {
     try {
       const config = loadConfigFromEnv();
       const bridge = new TelegramCodexBridge(config);
-      console.log(bridge.getStatusReport());
+      const report = await bridge.getStatusReport({ refreshAuth: true, source: 'cli-status' });
+      console.log(report);
       return;
     } catch (err) {
       console.error(`Failed to render status: ${(err as Error).message}`);

@@ -53,6 +53,20 @@ interface DateFormatter {
   format: (value: Date) => string;
 }
 
+type CodexAuthState = 'unknown' | 'checking' | 'ok' | 'unauthorized' | 'error';
+type CodexAuthSource = 'startup-check' | 'status-command' | 'cli-status' | 'runtime-event' | 'prompt-response';
+
+interface CodexAuthStatus {
+  state: CodexAuthState;
+  lastCheckAt: Date | null;
+  lastOkAt: Date | null;
+  lastFailureAt: Date | null;
+  lastFailureDetail: string | null;
+  lastFailureSource: CodexAuthSource | null;
+  lastHttpStatusCode: number | null;
+  lastMessage: string | null;
+}
+
 export class TelegramCodexBridge {
   private readonly logger: BridgeLogger;
   private codexProcess: ChildProcessWithoutNullStreams | null = null;
@@ -76,6 +90,17 @@ export class TelegramCodexBridge {
   private readonly timeZoneLabel: string;
   private gitInfoWarningLogged = false;
   private botUsername: string | null = null;
+  private codexAuthStatus: CodexAuthStatus = {
+    state: 'unknown',
+    lastCheckAt: null,
+    lastOkAt: null,
+    lastFailureAt: null,
+    lastFailureDetail: null,
+    lastFailureSource: null,
+    lastHttpStatusCode: null,
+    lastMessage: null,
+  };
+  private codexAuthCheckPromise: Promise<void> | null = null;
 
   constructor(private readonly config: BotifyConfig, logger?: BridgeLogger) {
     this.logger = logger ?? console;
@@ -114,6 +139,7 @@ export class TelegramCodexBridge {
     ensureDirectory(this.config.codexHome);
     ensureDirectory(this.config.attachmentsDir);
     await this.loadBotIdentity();
+    await this.verifyCodexLoginStatus('startup-check');
     const codexEnv = {
       ...process.env,
       CODEX_HOME: this.config.codexHome,
@@ -308,11 +334,26 @@ export class TelegramCodexBridge {
   private handleCodexNotification(message: CodexMessage): void {
     const { method, params } = message;
     this.maybeUpdateConversationIdFromPayload(params);
+    if (method === 'codex/event') {
+      this.inspectCodexEventForAuthIssues(params);
+    }
     if (method && method.startsWith('events/')) {
       this.appendTail(`${method}: ${JSON.stringify(params)}`);
       return;
     }
     this.logger.info(`Codex notification: ${method ?? 'unknown'} ${JSON.stringify(params)}`);
+  }
+
+  private inspectCodexEventForAuthIssues(payload: unknown): void {
+    const httpStatus = extractHttpStatusCode(payload);
+    if (httpStatus !== 401) {
+      return;
+    }
+    const detail = describeCodexEvent(payload) || 'Codex signaled HTTP 401 Unauthorized.';
+    const changed = this.recordCodexAuthFailure('unauthorized', detail, 'runtime-event', httpStatus);
+    if (changed) {
+      this.notifyCodexUnauthorized(detail);
+    }
   }
 
   private handleCodexRequest(message: CodexMessage): void {
@@ -475,10 +516,7 @@ export class TelegramCodexBridge {
     }
 
     if (command === '/status') {
-      void this.sendText(this.getStatusReport(chatId), {
-        chatId,
-        replyToMessageId: message.message_id,
-      });
+      void this.handleStatusCommand(chatId, message.message_id);
       return;
     }
 
@@ -576,6 +614,12 @@ export class TelegramCodexBridge {
           );
         } else {
           void this.sendText(`Codex error: ${message}`, sendOptions);
+          if (looksUnauthorizedMessage(message)) {
+            const changed = this.recordCodexAuthFailure('unauthorized', message, 'prompt-response', 401);
+            if (changed) {
+              this.notifyCodexUnauthorized(message);
+            }
+          }
           this.setConversationId(session, null);
         }
       })
@@ -670,6 +714,7 @@ export class TelegramCodexBridge {
       throw new Error(formatted || 'Codex reported an internal error.');
     }
 
+    this.recordCodexAuthSuccess('prompt-response', 'Codex responded to Telegram prompt.');
     return formatted || '(Codex returned no content.)';
   }
 
@@ -864,14 +909,26 @@ export class TelegramCodexBridge {
     }
   }
 
-  getStatusReport(chatId: string = String(this.config.chatId)): string {
+  async getStatusReport(options?: { chatId?: string; refreshAuth?: boolean; source?: CodexAuthSource }): Promise<string> {
+    const chatId = options?.chatId ?? String(this.config.chatId);
+    if (options?.refreshAuth) {
+      const source = options.source ?? 'cli-status';
+      await this.verifyCodexLoginStatus(source);
+    }
     const session = this.sessions.get(chatId) ?? null;
     return this.buildStatusLines(session).join('\n');
   }
 
   private buildStatusLines(session: ChatSession | null): string[] {
-    return [
+    const lines = [
       `Codex ready: ${this.codexReady}`,
+      `Codex auth: ${this.describeCodexAuthSummary()}`,
+    ];
+    const authDetail = this.describeCodexAuthDetail();
+    if (authDetail) {
+      lines.push(`Auth detail: ${authDetail}`);
+    }
+    lines.push(
       `Queue length: ${session?.messageQueue.length ?? 0}`,
       `Active conversation: ${session?.conversationId ?? 'none'}`,
       `Last rollout: ${session?.lastRolloutPath ?? 'n/a'}`,
@@ -884,7 +941,173 @@ export class TelegramCodexBridge {
       `Botify version: ${versionString}`,
       `Model: ${this.config.model ?? 'default'}`,
       `Sandbox: ${this.config.sandboxMode ?? 'n/a'}`,
-    ];
+    );
+    return lines;
+  }
+
+  private describeCodexAuthSummary(): string {
+    const state = this.codexAuthStatus.state;
+    const stateLabel = state.charAt(0).toUpperCase() + state.slice(1);
+    const qualifiers: string[] = [];
+    if (this.codexAuthStatus.lastCheckAt) {
+      qualifiers.push(`checked ${this.formatRelativeDuration(this.codexAuthStatus.lastCheckAt)}`);
+    }
+    if (state === 'ok' && this.codexAuthStatus.lastOkAt) {
+      qualifiers.push(`last ok ${this.formatRelativeDuration(this.codexAuthStatus.lastOkAt)}`);
+    }
+    if ((state === 'unauthorized' || state === 'error') && this.codexAuthStatus.lastFailureAt) {
+      qualifiers.push(`last failure ${this.formatRelativeDuration(this.codexAuthStatus.lastFailureAt)}`);
+    }
+    return qualifiers.length ? `${stateLabel} (${qualifiers.join(', ')})` : stateLabel;
+  }
+
+  private describeCodexAuthDetail(): string | null {
+    if (this.codexAuthStatus.state === 'ok' || this.codexAuthStatus.state === 'unknown') {
+      return null;
+    }
+    const detail = this.codexAuthStatus.lastFailureDetail || this.codexAuthStatus.lastMessage;
+    if (!detail) {
+      return null;
+    }
+    const parts: string[] = [];
+    if (this.codexAuthStatus.lastHttpStatusCode) {
+      parts.push(`HTTP ${this.codexAuthStatus.lastHttpStatusCode}`);
+    }
+    if (this.codexAuthStatus.lastFailureSource) {
+      parts.push(this.codexAuthStatus.lastFailureSource);
+    }
+    parts.push(detail);
+    return parts.join(' – ');
+  }
+
+  private async verifyCodexLoginStatus(source: CodexAuthSource): Promise<void> {
+    if (this.codexAuthCheckPromise) {
+      await this.codexAuthCheckPromise;
+      return;
+    }
+    this.codexAuthStatus.state = 'checking';
+    this.codexAuthStatus.lastCheckAt = new Date();
+    this.codexAuthStatus.lastMessage = `Checking Codex auth via ${source}`;
+    const promise = this.runCodexLoginStatusCommand()
+      .then((result) => this.handleCodexLoginStatusResult(result, source))
+      .catch((err) => {
+        const message = (err as Error).message || 'Codex login status failed';
+        this.logger.warn(`Codex login status command failed: ${message}`);
+        this.recordCodexAuthFailure('error', message, source, null);
+      })
+      .finally(() => {
+        this.codexAuthCheckPromise = null;
+      });
+    this.codexAuthCheckPromise = promise;
+    await promise;
+  }
+
+  private async handleCodexLoginStatusResult(
+    result: { code: number | null; stdout: string; stderr: string },
+    source: CodexAuthSource,
+  ): Promise<void> {
+    const stdout = result.stdout?.trim() ?? '';
+    const stderr = result.stderr?.trim() ?? '';
+    const detail = [stdout, stderr].filter(Boolean).join(' | ');
+    if (result.code === 0) {
+      this.recordCodexAuthSuccess(source, detail || 'Codex login status OK');
+      return;
+    }
+    const combined = detail || `exit code ${result.code ?? 'unknown'}`;
+    const httpStatus = detectHttpStatusFromText(combined);
+    if (httpStatus === 401 || /401/.test(combined) || /unauthorized/i.test(combined)) {
+      const changed = this.recordCodexAuthFailure('unauthorized', combined, source, httpStatus ?? 401);
+      if (changed) {
+        this.notifyCodexUnauthorized(`Codex login status failed: ${combined}`);
+      }
+      return;
+    }
+    this.recordCodexAuthFailure('error', combined, source, httpStatus);
+  }
+
+  private runCodexLoginStatusCommand(): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const binary = this.resolveCodexBinary();
+      const codexEnv = {
+        ...process.env,
+        CODEX_HOME: this.config.codexHome,
+      };
+      const child = spawn(binary, ['login', 'status'], {
+        cwd: this.config.codexCwd,
+        env: codexEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      child.on('error', (err) => reject(err));
+      child.on('close', (code) => {
+        resolve({ code, stdout, stderr });
+      });
+    });
+  }
+
+  private recordCodexAuthSuccess(source: CodexAuthSource, detail: string): void {
+    const now = new Date();
+    this.codexAuthStatus.state = 'ok';
+    this.codexAuthStatus.lastOkAt = now;
+    this.codexAuthStatus.lastMessage = detail;
+    this.codexAuthStatus.lastFailureDetail = null;
+    this.codexAuthStatus.lastFailureAt = null;
+    this.codexAuthStatus.lastFailureSource = null;
+    this.codexAuthStatus.lastHttpStatusCode = null;
+  }
+
+  private recordCodexAuthFailure(
+    state: Extract<CodexAuthState, 'unauthorized' | 'error'>,
+    detail: string,
+    source: CodexAuthSource,
+    httpStatus: number | null,
+  ): boolean {
+    const previousState = this.codexAuthStatus.state;
+    this.codexAuthStatus.state = state;
+    this.codexAuthStatus.lastFailureAt = new Date();
+    this.codexAuthStatus.lastFailureDetail = detail;
+    this.codexAuthStatus.lastFailureSource = source;
+    this.codexAuthStatus.lastMessage = detail;
+    this.codexAuthStatus.lastHttpStatusCode = httpStatus;
+    return previousState !== state;
+  }
+
+  private notifyCodexUnauthorized(detail: string): void {
+    const trimmed = detail.trim();
+    if (!trimmed) {
+      return;
+    }
+    const message = [
+      '⚠️ Codex authentication failed (HTTP 401).',
+      trimmed,
+      'Run `codex login` inside the Codex working directory and restart Botify.',
+    ].join('\n');
+    void this.notifyOwner(message);
+  }
+
+  private resolveCodexBinary(): string {
+    const command = this.config.codexCommand?.trim();
+    if (!command) {
+      return 'codex';
+    }
+    const tokens = tokenizeCommand(command);
+    if (!tokens.length) {
+      return 'codex';
+    }
+    for (const token of tokens) {
+      const base = path.basename(token);
+      if (base === 'codex' || base.startsWith('codex')) {
+        return token;
+      }
+    }
+    return tokens[0];
   }
 
   private getRepositoryBranch(): string {
@@ -1021,6 +1244,23 @@ export class TelegramCodexBridge {
         this.logger.warn(`Failed to send /relive notice: ${(err as Error).message}`);
       })
       .finally(() => finishShutdown());
+  }
+
+  private async handleStatusCommand(chatId: string, replyToMessageId?: number): Promise<void> {
+    try {
+      const report = await this.getStatusReport({ chatId, refreshAuth: true, source: 'status-command' });
+      await this.sendText(report, {
+        chatId,
+        replyToMessageId,
+      });
+    } catch (err) {
+      const message = (err as Error).message || 'Unknown status error';
+      this.logger.error(`Failed to render /status: ${message}`);
+      await this.sendText(`Failed to render status: ${message}`, {
+        chatId,
+        replyToMessageId,
+      });
+    }
   }
 
   private extractAttachmentDescriptors(message: any): AttachmentDescriptor[] {
@@ -1304,6 +1544,114 @@ function looksLikeConversationContainer(obj: unknown): boolean {
     const normalizedKey = key.toLowerCase();
     return normalizedKey.includes('conversation') || normalizedKey.includes('session');
   });
+}
+
+function extractHttpStatusCode(payload: unknown): number | null {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+  const visited = new Set<unknown>();
+  const queue: unknown[] = [payload];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object' || visited.has(current)) {
+      continue;
+    }
+    visited.add(current);
+    for (const [key, value] of Object.entries(current)) {
+      if (typeof value === 'number') {
+        const normalizedKey = key.toLowerCase();
+        if (normalizedKey.includes('http') && normalizedKey.includes('status')) {
+          return value;
+        }
+      }
+      if (value && typeof value === 'object') {
+        queue.push(value);
+      }
+    }
+  }
+  return null;
+}
+
+function describeCodexEvent(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+  const record = payload as Record<string, any>;
+  const msg = record.msg;
+  const parts: string[] = [];
+  if (msg && typeof msg === 'object') {
+    if (typeof msg.type === 'string') {
+      parts.push(`type=${msg.type}`);
+    }
+    if (typeof msg.message === 'string') {
+      parts.push(msg.message);
+    }
+  }
+  const meta = record._meta;
+  if (meta && typeof meta === 'object' && typeof meta.requestId === 'string') {
+    parts.push(`request ${meta.requestId}`);
+  } else if (typeof record.id === 'string') {
+    parts.push(`request ${record.id}`);
+  }
+  return parts.length ? parts.join(' | ') : null;
+}
+
+function detectHttpStatusFromText(text: string): number | null {
+  if (!text) {
+    return null;
+  }
+  const match = text.match(/\b([45]\d{2})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function looksUnauthorizedMessage(message: string): boolean {
+  if (!message) {
+    return false;
+  }
+  return /401/.test(message) || /unauthorized/i.test(message);
+}
+
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let escapeNext = false;
+  for (const char of command) {
+    if (escapeNext) {
+      current += char;
+      escapeNext = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escapeNext = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current.length) {
+        tokens.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (current.length) {
+    tokens.push(current);
+  }
+  return tokens;
 }
 
 function chunkMessage(text: string, size: number): string[] {
