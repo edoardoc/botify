@@ -11,6 +11,7 @@ interface MessageQueueItem {
   metadata: {
     from: string;
     chatId: string;
+    chatType?: string;
     replyToMessageId?: number;
   };
 }
@@ -496,6 +497,7 @@ export class TelegramCodexBridge {
       metadata: {
         from: message.from?.username || message.from?.first_name || 'user',
         chatId,
+        chatType: message.chat?.type,
         replyToMessageId: message.message_id,
       },
     });
@@ -547,7 +549,8 @@ export class TelegramCodexBridge {
       return;
     }
     session.processing = true;
-    this.handlePrompt(session, next.text)
+    const promptWithSender = this.applySenderContext(next);
+    this.handlePrompt(session, promptWithSender)
       .then((responseText) =>
         this.sendText(responseText, {
           chatId: next.metadata.chatId,
@@ -586,6 +589,21 @@ export class TelegramCodexBridge {
     for (const session of this.sessions.values()) {
       this.processQueue(session);
     }
+  }
+
+  private applySenderContext(next: MessageQueueItem): string {
+    const chatType = next.metadata.chatType?.trim().toLowerCase();
+    const sender = next.metadata.from?.trim();
+    if (!sender) {
+      return next.text;
+    }
+    const isGroupChat = chatType === 'group' || chatType === 'supergroup';
+    if (!isGroupChat) {
+      return next.text;
+    }
+    const isHandleLike = /^[a-z0-9_][a-z0-9_.-]*$/i.test(sender);
+    const prefix = isHandleLike ? `@${sender}: ` : `(from ${sender}) `;
+    return `${prefix}${next.text}`;
   }
 
   private async handlePrompt(session: ChatSession, prompt: string): Promise<string> {
