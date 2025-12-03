@@ -54,7 +54,13 @@ interface DateFormatter {
 }
 
 type CodexAuthState = 'unknown' | 'checking' | 'ok' | 'unauthorized' | 'error';
-type CodexAuthSource = 'startup-check' | 'status-command' | 'cli-status' | 'runtime-event' | 'prompt-response';
+type CodexAuthSource =
+  | 'startup-check'
+  | 'startup-announce'
+  | 'status-command'
+  | 'cli-status'
+  | 'runtime-event'
+  | 'prompt-response';
 
 interface CodexAuthStatus {
   state: CodexAuthState;
@@ -228,7 +234,7 @@ export class TelegramCodexBridge {
     });
 
     await this.initPromise;
-    this.announceStartup();
+    void this.announceStartup();
   }
 
   async stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
@@ -1220,11 +1226,14 @@ export class TelegramCodexBridge {
     }
   }
 
-  private announceStartup(): void {
-    const message = `Botify ${versionString} is online and ready.`;
-    this.sendText(message).catch((err) => {
+  private async announceStartup(): Promise<void> {
+    try {
+      const report = await this.getStatusReport({ refreshAuth: true, source: 'startup-announce' });
+      const message = [`Botify ${versionString} is online and ready.`, '', report].join('\n');
+      await this.sendText(message);
+    } catch (err) {
       this.logger.warn(`Failed to send startup announcement: ${(err as Error).message}`);
-    });
+    }
   }
 
   private handleReliveCommand(chatId: string): void {
