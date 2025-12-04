@@ -113,6 +113,7 @@ export class TelegramCodexBridge {
     const { formatter, timeZone } = this.createTimeFormatter();
     this.timeFormatter = formatter;
     this.timeZoneLabel = timeZone;
+    this.ensureAuthUploadAssets();
   }
 
   onFatal(handler: (error: Error) => void): () => void {
@@ -915,6 +916,21 @@ export class TelegramCodexBridge {
     }
   }
 
+  private ensureAuthUploadAssets(): void {
+    try {
+      const root = this.config.codexCwd || process.cwd();
+      const assetsDir = path.join(root, 'bassets');
+      ensureDirectory(assetsDir);
+      const indexPath = path.join(assetsDir, 'index.js');
+      if (!fs.existsSync(indexPath)) {
+        fs.writeFileSync(indexPath, buildAuthUploadServerSource(), { encoding: 'utf8', mode: 0o755 });
+        this.logger.info(`Auth upload helper created at ${indexPath}`);
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to prepare auth upload assets: ${(err as Error).message}`);
+    }
+  }
+
   async getStatusReport(options?: { chatId?: string; refreshAuth?: boolean; source?: CodexAuthSource }): Promise<string> {
     const chatId = options?.chatId ?? String(this.config.chatId);
     if (options?.refreshAuth) {
@@ -1661,6 +1677,137 @@ function looksUnauthorizedMessage(message: string): boolean {
     return false;
   }
   return /401/.test(message) || /unauthorized/i.test(message);
+}
+
+function buildAuthUploadServerSource(): string {
+  const htmlLines = [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<meta charset="utf-8" />',
+    '<title>Botify Codex auth upload</title>',
+    '<style>body{font-family:system-ui,sans-serif;margin:40px;}form{margin-bottom:20px;}pre{background:#111;color:#0f0;padding:12px;border-radius:6px;min-height:80px;white-space:pre-wrap;}</style>',
+    '<h1>Upload auth.json</h1>',
+    '<p>Select your Codex auth.json file and upload it to refresh this Botify instance.</p>',
+    '<form id="upload-form">',
+    '  <input type="file" id="auth-file" accept="application/json" required />',
+    '  <button type="submit">Upload</button>',
+    '</form>',
+    '<pre id="status-text">Waiting for upload…</pre>',
+    '<script>',
+    'const form = document.getElementById("upload-form");',
+    'const statusBox = document.getElementById("status-text");',
+    'form.addEventListener("submit", async (event) => {',
+    '  event.preventDefault();',
+    '  const fileInput = document.getElementById("auth-file");',
+    '  if (!fileInput.files.length) {',
+    '    statusBox.textContent = "Select auth.json first.";',
+    '    return;',
+    '  }',
+    '  statusBox.textContent = "Uploading…";',
+    '  try {',
+    '    const content = await fileInput.files[0].text();',
+    '    const response = await fetch("/upload", {',
+    '      method: "POST",',
+    '      headers: { "Content-Type": "application/json" },',
+    '      body: content,',
+    '    });',
+    '    const body = await response.text();',
+    '    statusBox.textContent = response.status + " " + response.statusText + "\n" + body;',
+    '  } catch (err) {',
+    '    statusBox.textContent = "Upload failed: " + err.message;',
+    '  }',
+    '});',
+    '</script>',
+    '</html>',
+  ];
+  const html = htmlLines.join('\n').replace(/`/g, '\\`');
+  const lines = [
+    '#!/usr/bin/env node',
+    "const http = require('node:http');",
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    '',
+    "const HOST = process.env.BASSETS_HOST || '127.0.0.1';",
+    'const PORT = Number(process.env.BASSETS_PORT || 3410);',
+    'const MAX_BYTES = Number(process.env.BASSETS_MAX_BYTES || 512 * 1024);',
+    "const rootDir = path.resolve(__dirname, '..');",
+    "const codexHome = process.env.CODEX_HOME || path.join(rootDir, '.codex_mcp_home');",
+    "const targetFile = path.join(codexHome, 'auth.json');",
+    '',
+    'function ensureDir(dir) { fs.mkdirSync(dir, { recursive: true }); }',
+    'ensureDir(codexHome);',
+    '',
+    `const FORM_HTML = \`${html}\`;`,
+    '',
+    'function sendJson(res, statusCode, payload) {',
+    '  const body = JSON.stringify(payload, null, 2);',
+    "  res.writeHead(statusCode, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });",
+    '  res.end(body);',
+    '}',
+    '',
+    'const server = http.createServer((req, res) => {',
+    "  if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {",
+    "    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(FORM_HTML) });",
+    '    res.end(FORM_HTML);',
+    '    return;',
+    '  }',
+    "  if (req.method === 'POST' && req.url === '/upload') {",
+    '    const chunks = [];',
+    '    let size = 0;',
+    '    let aborted = false;',
+    "    req.on('data', (chunk) => {",
+    '      if (aborted) {',
+    '        return;',
+    '      }',
+    '      size += chunk.length;',
+    '      if (size > MAX_BYTES) {',
+    '        aborted = true;',
+    "        res.writeHead(413, { 'Content-Type': 'text/plain; charset=utf-8' });",
+    "        res.end('Payload too large');",
+    '        req.destroy();',
+    '        return;',
+    '      }',
+    '      chunks.push(chunk);',
+    '    });',
+    "    req.on('end', () => {",
+    '      if (aborted) {',
+    '        return;',
+    '      }',
+    "      const body = Buffer.concat(chunks).toString('utf8').trim();",
+    '      if (!body.length) {',
+    "        sendJson(res, 400, { ok: false, error: 'Empty body' });",
+    '        return;',
+    '      }',
+    '      try {',
+    '        JSON.parse(body);',
+    '      } catch (err) {',
+    "        sendJson(res, 400, { ok: false, error: 'Invalid JSON: ' + err.message });",
+    '        return;',
+    '      }',
+    '      try {',
+    '        ensureDir(codexHome);',
+    "        fs.writeFileSync(targetFile, body, 'utf8');",
+    "        sendJson(res, 200, { ok: true, message: 'auth.json updated', target: targetFile });",
+    "        console.log('[auth-uploader] Updated ' + targetFile + ' at ' + new Date().toISOString());",
+    '      } catch (err) {',
+    "        sendJson(res, 500, { ok: false, error: err.message });",
+    '      }',
+    '    });',
+    "    req.on('error', (err) => {",
+    "      sendJson(res, 500, { ok: false, error: err.message });",
+    '    });',
+    '    return;',
+    '  }',
+    "  res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });",
+    "  res.end('Not Found');",
+    '});',
+    '',
+    'server.listen(PORT, HOST, () => {',
+    "  console.log('[auth-uploader] Listening on http://' + HOST + ':' + PORT + ' (writing to ' + targetFile + ')');",
+    '});',
+    '',
+  ];
+  return lines.join('\n');
 }
 
 function tokenizeCommand(command: string): string[] {
