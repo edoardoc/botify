@@ -944,6 +944,8 @@ export class TelegramCodexBridge {
       `Last interaction: ${this.formatTimestamp(this.lastInteractionAt)}`,
       `Repo branch: ${this.getRepositoryBranch()}`,
       `Last commit: ${this.getRepositoryHead()}`,
+      `Git status: ${this.getGitStatusSummary()}`,
+      `Diff vs master: ${this.getGitDiffSummary()}`,
       `Botify version: ${versionString}`,
       `Model: ${this.config.model ?? 'default'}`,
       `Sandbox: ${this.config.sandboxMode ?? 'n/a'}`,
@@ -1181,6 +1183,43 @@ export class TelegramCodexBridge {
     }
   }
 
+  private getGitStatusSummary(): string {
+    const root = this.config.codexCwd || process.cwd();
+    try {
+      const output = execSync('git status -sb --untracked-files=normal', {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf8',
+      })
+        .split('\n')[0]
+        .trim();
+      return output || 'clean';
+    } catch (err) {
+      this.logGitWarning(`Failed to read git status: ${(err as Error).message}`);
+      return 'unknown';
+    }
+  }
+
+  private getGitDiffSummary(): string {
+    const root = this.config.codexCwd || process.cwd();
+    try {
+      const output = execSync('git diff --name-only master...HEAD', {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf8',
+      }).trim();
+      if (!output.length) {
+        return 'in sync';
+      }
+      const files = output.split('\n').filter(Boolean);
+      const count = files.length;
+      return `${count} file${count === 1 ? '' : 's'} differ`;
+    } catch (err) {
+      this.logGitWarning(`Failed to compare with master: ${(err as Error).message}`);
+      return 'comparison unavailable';
+    }
+  }
+
   private getGitDirectory(root: string): string | null {
     const dotGitPath = path.join(root, '.git');
     try {
@@ -1261,6 +1300,7 @@ export class TelegramCodexBridge {
       await this.sendText(report, {
         chatId,
         replyToMessageId,
+        renderMode: 'pre',
       });
     } catch (err) {
       const message = (err as Error).message || 'Unknown status error';
@@ -1396,12 +1436,14 @@ export class TelegramCodexBridge {
 
   private async sendText(
     text: string,
-    options?: { chatId?: string; replyToMessageId?: number },
+    options?: { chatId?: string; replyToMessageId?: number; renderMode?: 'auto' | 'pre' },
   ): Promise<void> {
     const targetChat = options?.chatId ?? this.config.chatId;
     const chunks = chunkMessage(text, this.config.outputChunk);
     for (const chunk of chunks) {
-      const formatted = formatTelegramHtml(chunk);
+      const formatted = options?.renderMode === 'pre'
+        ? `<pre>${escapeHtml(chunk)}</pre>`
+        : formatTelegramHtml(chunk);
       const payload: Record<string, unknown> = {
         chat_id: targetChat,
         text: formatted,
