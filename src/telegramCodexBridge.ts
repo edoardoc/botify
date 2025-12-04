@@ -1401,9 +1401,10 @@ export class TelegramCodexBridge {
     const targetChat = options?.chatId ?? this.config.chatId;
     const chunks = chunkMessage(text, this.config.outputChunk);
     for (const chunk of chunks) {
+      const formatted = formatTelegramHtml(chunk);
       const payload: Record<string, unknown> = {
         chat_id: targetChat,
-        text: `<pre>${escapeHtml(chunk)}</pre>`,
+        text: formatted,
         parse_mode: 'HTML',
         disable_web_page_preview: true,
       };
@@ -1667,13 +1668,103 @@ function chunkMessage(text: string, size: number): string[] {
   const chunks: string[] = [];
   let remaining = text || '';
   while (remaining.length > size) {
-    chunks.push(remaining.slice(0, size));
-    remaining = remaining.slice(size);
+    let splitIndex = remaining.lastIndexOf('\n', size);
+    if (splitIndex <= 0) {
+      splitIndex = size;
+    }
+    chunks.push(remaining.slice(0, splitIndex));
+    remaining = remaining.slice(splitIndex);
   }
   if (remaining.length) {
     chunks.push(remaining);
   }
   return chunks;
+}
+
+function formatTelegramHtml(text: string): string {
+  if (!text) {
+    return '&nbsp;';
+  }
+  const segments: string[] = [];
+  const codeFence = /```([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = codeFence.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      const plain = text.slice(lastIndex, match.index);
+      const formattedPlain = formatInlineMarkdown(plain);
+      if (formattedPlain.trim().length) {
+        segments.push(formattedPlain);
+      }
+    }
+    const codeBlock = normalizeCodeBlock(match[1]);
+    if (codeBlock.length) {
+      segments.push(`<pre>${escapeHtml(codeBlock)}</pre>`);
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    const remainder = formatInlineMarkdown(text.slice(lastIndex));
+    if (remainder.trim().length) {
+      segments.push(remainder);
+    }
+  }
+  if (!segments.length) {
+    return escapeHtml(text);
+  }
+  return segments.join('\n');
+}
+
+function formatInlineMarkdown(text: string): string {
+  if (!text) {
+    return '';
+  }
+  const inlineCode = /`([^`]+)`/g;
+  let lastIndex = 0;
+  const parts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = inlineCode.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      const plain = text.slice(lastIndex, match.index);
+      parts.push(applyBasicFormatting(escapeHtml(plain)));
+    }
+    parts.push(`<code>${escapeHtml(match[1])}</code>`);
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    const tail = text.slice(lastIndex);
+    parts.push(applyBasicFormatting(escapeHtml(tail)));
+  }
+  return parts.join('');
+}
+
+function applyBasicFormatting(text: string): string {
+  if (!text) {
+    return '';
+  }
+  return text
+    .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
+    .replace(/__([\s\S]+?)__/g, '<b>$1</b>')
+    .replace(/~~([\s\S]+?)~~/g, '<s>$1</s>')
+    .replace(/\[([^\]]+)]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+}
+
+function normalizeCodeBlock(raw: string): string {
+  if (!raw) {
+    return '';
+  }
+  let normalized = raw.replace(/\r\n?/g, '\n');
+  if (normalized.startsWith('\n')) {
+    normalized = normalized.slice(1);
+  }
+  const firstLineBreak = normalized.indexOf('\n');
+  if (firstLineBreak !== -1) {
+    const maybeLang = normalized.slice(0, firstLineBreak).trim();
+    if (/^[\w.-]+$/.test(maybeLang)) {
+      normalized = normalized.slice(firstLineBreak + 1);
+    }
+  }
+  return normalized.replace(/\n+$/, '');
 }
 
 function buildAttachmentNameParts(
