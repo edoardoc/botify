@@ -1267,8 +1267,7 @@ export class TelegramCodexBridge {
 
   private async announceStartup(): Promise<void> {
     try {
-      const report = await this.getStatusReport({ refreshAuth: true, source: 'startup-announce' });
-      const message = [`Botify ${versionString} is online and ready.`, '', report].join('\n');
+      const message = `Botify ${versionString} is online and ready.`;
       await this.sendText(message);
     } catch (err) {
       this.logger.warn(`Failed to send startup announcement: ${(err as Error).message}`);
