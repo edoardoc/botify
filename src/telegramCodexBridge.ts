@@ -1744,7 +1744,9 @@ function applyBasicFormatting(text: string): string {
   }
   return text
     .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
-    .replace(/__([\s\S]+?)__/g, '<b>$1</b>')
+    .replace(/__([\s\S]+?)__/g, '<u>$1</u>')
+    .replace(/(?<!\*)\*([^\*][\s\S]*?)\*(?!\*)/g, '<i>$1</i>')
+    .replace(/(?<!_)_([^_][\s\S]*?)_(?!_)/g, '<i>$1</i>')
     .replace(/~~([\s\S]+?)~~/g, '<s>$1</s>')
     .replace(/\[([^\]]+)]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
 }
