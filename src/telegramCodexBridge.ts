@@ -498,6 +498,7 @@ export class TelegramCodexBridge {
           '/ping   – heartbeat',
           '/reset  – drop the active Codex session',
           '/status – show server status',
+          '/authassets – send Codex auth helper scripts',
           '/relive – gracefully exit so a new build can start',
           '/help   – this message',
           '',
@@ -524,6 +525,11 @@ export class TelegramCodexBridge {
 
     if (command === '/status') {
       void this.handleStatusCommand(chatId, message.message_id);
+      return;
+    }
+
+    if (command === '/authassets') {
+      void this.handleAuthAssetsCommand(chatId, message.message_id);
       return;
     }
 
@@ -1337,6 +1343,43 @@ export class TelegramCodexBridge {
     }
   }
 
+  private async handleAuthAssetsCommand(chatId: string, replyToMessageId?: number): Promise<void> {
+    try {
+      const root = this.config.codexCwd || process.cwd();
+      const assetsDir = path.join(root, 'bassets');
+      ensureDirectory(assetsDir);
+      const files = [
+        { file: path.join(assetsDir, 'botifyauth.js'), caption: 'botifyauth.js (WebSocket server)' },
+        { file: path.join(assetsDir, 'botify_codex_inject.js'), caption: 'botify_codex_inject.js (Node injector)' },
+        { file: path.join(assetsDir, 'botify_codex_inject.ps1'), caption: 'botify_codex_inject.ps1 (PowerShell injector)' },
+      ];
+      const missing = files.filter((entry) => !fs.existsSync(entry.file)).map((entry) => path.basename(entry.file));
+      if (missing.length) {
+        this.ensureAuthUploadAssets();
+      }
+      await this.sendText(
+        'Sending Codex auth helper scripts. Download them, run `botifyauth.js` on the Botify host, then use either inject script on your local machine.',
+        { chatId, replyToMessageId },
+      );
+      for (const entry of files) {
+        try {
+          await this.sendDocument(entry.file, { chatId, caption: entry.caption });
+        } catch (err) {
+          this.logger.error(`Failed to send asset ${entry.file}: ${(err as Error).message}`);
+          await this.sendText(`Failed to send ${path.basename(entry.file)}: ${(err as Error).message}`, {
+            chatId,
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.error(`Failed to handle /authassets: ${(err as Error).message}`);
+      await this.sendText(`Failed to prepare auth assets: ${(err as Error).message}`, {
+        chatId,
+        replyToMessageId,
+      });
+    }
+  }
+
   private extractAttachmentDescriptors(message: any): AttachmentDescriptor[] {
     const attachments: AttachmentDescriptor[] = [];
     const document = message.document;
@@ -1486,6 +1529,45 @@ export class TelegramCodexBridge {
     }
   }
 
+  private async sendDocument(
+    filePath: string,
+    options?: { chatId?: string; caption?: string; replyToMessageId?: number },
+  ): Promise<void> {
+    const chatId = options?.chatId ?? this.config.chatId;
+    const fileName = path.basename(filePath);
+    const fileBuffer = fs.readFileSync(filePath);
+    const boundary = `botify-${Date.now()}`;
+    const parts: Array<Buffer> = [];
+    const appendField = (name: string, value: string) => {
+      parts.push(Buffer.from(`--${boundary}\r\n`));
+      parts.push(Buffer.from(`Content-Disposition: form-data; name="${name}"\r\n\r\n`));
+      parts.push(Buffer.from(`${value}\r\n`));
+    };
+    appendField('chat_id', chatId);
+    if (options?.caption) {
+      appendField('caption', options.caption);
+    }
+    if (options?.replyToMessageId) {
+      appendField('reply_to_message_id', String(options.replyToMessageId));
+      appendField('allow_sending_without_reply', 'true');
+    }
+    parts.push(Buffer.from(`--${boundary}\r\n`));
+    parts.push(
+      Buffer.from(
+        `Content-Disposition: form-data; name="document"; filename="${fileName}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+      ),
+    );
+    parts.push(fileBuffer);
+    parts.push(Buffer.from('\r\n'));
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
+    const body = Buffer.concat(parts);
+
+    await this.apiRequest('sendDocument', body, {
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      'Content-Length': String(body.length),
+    });
+  }
+
   private async notifyOwner(message: string): Promise<void> {
     try {
       await this.sendText(message);
@@ -1494,19 +1576,24 @@ export class TelegramCodexBridge {
     }
   }
 
-  private apiRequest(method: string, payload?: Record<string, unknown>): Promise<any> {
+  private apiRequest(
+    method: string,
+    payload?: Record<string, unknown> | Buffer,
+    headers?: Record<string, string>,
+  ): Promise<any> {
     return new Promise((resolve, reject) => {
       const isGet = payload === undefined;
-      const body = isGet ? null : JSON.stringify(payload);
+      const isBuffer = Buffer.isBuffer(payload);
+      const body = isGet ? null : isBuffer ? (payload as Buffer) : Buffer.from(JSON.stringify(payload));
       const options: https.RequestOptions = {
         hostname: 'api.telegram.org',
         method: isGet ? 'GET' : 'POST',
         path: `/bot${this.config.botToken}/${method}`,
         headers: isGet
           ? undefined
-          : {
+          : headers ?? {
               'Content-Type': 'application/json',
-              'Content-Length': Buffer.byteLength(body ?? ''),
+              'Content-Length': String(body?.length ?? 0),
             },
       };
       const req = https.request(options, (res) => {
