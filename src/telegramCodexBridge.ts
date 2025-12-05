@@ -1,6 +1,8 @@
 import { execSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { BotifyConfig, BridgeLogger } from './types.js';
@@ -96,6 +98,9 @@ export class TelegramCodexBridge {
   private readonly timeZoneLabel: string;
   private gitInfoWarningLogged = false;
   private botUsername: string | null = null;
+  private authServer: http.Server | null = null;
+  private authServerInfo: { urls: string[]; port: number } | null = null;
+  private authServerReady: Promise<{ urls: string[]; port: number }> | null = null;
   private codexAuthStatus: CodexAuthStatus = {
     state: 'unknown',
     lastCheckAt: null,
@@ -272,6 +277,7 @@ export class TelegramCodexBridge {
     this.startedAt = null;
     this.lastInteractionAt = null;
     this.running = false;
+    this.stopAuthServer();
   }
 
   private async initCodex(): Promise<void> {
@@ -495,12 +501,12 @@ export class TelegramCodexBridge {
           'Codex Telegram Bridge (MCP mode)',
           '',
           'Commands:',
-          '/ping   – heartbeat',
-          '/reset  – drop the active Codex session',
-          '/status – show server status',
-          '/authassets – send Codex auth helper scripts',
-          '/relive – gracefully exit so a new build can start',
-          '/help   – this message',
+          '/ping      – heartbeat',
+          '/reset     – drop the active Codex session',
+          '/status    – show server status',
+          '/startauth – launch Codex auth helper server',
+          '/relive    – gracefully exit so a new build can start',
+          '/help      – this message',
           '',
           'Any other message is forwarded to Codex via MCP.',
         ].join('\n'),
@@ -528,8 +534,8 @@ export class TelegramCodexBridge {
       return;
     }
 
-    if (command === '/authassets') {
-      void this.handleAuthAssetsCommand(chatId, message.message_id);
+    if (command === '/startauth') {
+      void this.handleStartAuthCommand(chatId, message.message_id);
       return;
     }
 
@@ -924,9 +930,7 @@ export class TelegramCodexBridge {
 
   private ensureAuthUploadAssets(): void {
     try {
-      const root = this.config.codexCwd || process.cwd();
-      const assetsDir = path.join(root, 'bassets');
-      ensureDirectory(assetsDir);
+      const assetsDir = this.getAuthAssetsDir();
       const serverPath = path.join(assetsDir, 'botifyauth.js');
       if (!fs.existsSync(serverPath)) {
         fs.writeFileSync(serverPath, buildAuthUploadServerSource(), { encoding: 'utf8', mode: 0o755 });
@@ -945,6 +949,146 @@ export class TelegramCodexBridge {
     } catch (err) {
       this.logger.warn(`Failed to prepare auth upload assets: ${(err as Error).message}`);
     }
+  }
+
+  private async startAuthServer(): Promise<{ urls: string[]; port: number }> {
+    if (this.authServerReady) {
+      return this.authServerReady;
+    }
+    const port = Number(process.env.BOTIFY_AUTH_HTTP_PORT || 8085);
+    const host = process.env.BOTIFY_AUTH_HTTP_HOST?.trim() || '0.0.0.0';
+    const assetsDir = this.getAuthAssetsDir();
+    this.ensureAuthUploadAssets();
+    this.authServerReady = new Promise<{ urls: string[]; port: number }>((resolve, reject) => {
+      try {
+        const server = http.createServer((req, res) => this.handleAuthHttpRequest(req, res, assetsDir));
+        server.on('error', (err) => {
+          if (this.authServer === server) {
+            this.stopAuthServer();
+          }
+          reject(err);
+        });
+        server.listen(port, host, () => {
+          this.authServer = server;
+          const urls = this.computeAuthServerUrls(host, port);
+          this.authServerInfo = { urls, port };
+          this.logger.info(`Auth helper server listening on ${host}:${port}`);
+          resolve({ urls, port });
+        });
+      } catch (err) {
+        reject(err);
+      }
+    }).catch((err) => {
+      this.authServerReady = null;
+      throw err;
+    });
+    return this.authServerReady;
+  }
+
+  private stopAuthServer(): void {
+    if (this.authServer) {
+      try {
+        this.authServer.close();
+      } catch {
+        // ignore
+      }
+    }
+    this.authServer = null;
+    this.authServerInfo = null;
+    this.authServerReady = null;
+  }
+
+  private handleAuthHttpRequest(req: http.IncomingMessage, res: http.ServerResponse, assetsDir: string): void {
+    try {
+      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+      const pathname = decodeURIComponent(url.pathname);
+      if (req.method !== 'GET') {
+        res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Method Not Allowed');
+        return;
+      }
+      if (pathname === '/' || pathname === '/index.html') {
+        const html = this.renderAuthIndexHtml();
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(html) });
+        res.end(html);
+        return;
+      }
+      const allowed = new Set(['botifyauth.js', 'botify_codex_inject.js', 'botify_codex_inject.ps1']);
+      const base = path.basename(pathname);
+      if (!allowed.has(base)) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Not Found');
+        return;
+      }
+      const filePath = path.join(assetsDir, base);
+      if (!fs.existsSync(filePath)) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('File missing on server.');
+        return;
+      }
+      const stream = fs.createReadStream(filePath);
+      stream.on('error', () => {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Failed to read file.');
+      });
+      const contentType =
+        base.endsWith('.ps1') ? 'text/plain; charset=utf-8' : 'application/javascript; charset=utf-8';
+      res.writeHead(200, { 'Content-Type': contentType });
+      stream.pipe(res);
+    } catch (err) {
+      this.logger.error(`Auth asset HTTP error: ${(err as Error).message}`);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      }
+      res.end('Internal Server Error');
+    }
+  }
+
+  private computeAuthServerUrls(host: string, port: number): string[] {
+    const urls = new Set<string>();
+    if (host && host !== '0.0.0.0') {
+      urls.add(`http://${host}:${port}/`);
+    }
+    urls.add(`http://localhost:${port}/`);
+    urls.add(`http://127.0.0.1:${port}/`);
+    const nets = os.networkInterfaces();
+    for (const net of Object.values(nets)) {
+      if (!net) {
+        continue;
+      }
+      for (const details of net) {
+        if (details && details.family === 'IPv4' && !details.internal && details.address) {
+          urls.add(`http://${details.address}:${port}/`);
+        }
+      }
+    }
+    return Array.from(urls);
+  }
+
+  private renderAuthIndexHtml(): string {
+    const lines = [
+      '<!doctype html>',
+      '<html lang="en">',
+      '<meta charset="utf-8" />',
+      '<title>Botify Codex Auth Helpers</title>',
+      '<style>body{font-family:system-ui,Segoe UI,sans-serif;margin:40px;max-width:720px;}code{background:#eee;padding:2px 4px;border-radius:4px;}li{margin-bottom:10px;}</style>',
+      '<h1>Botify Codex Auth Helpers</h1>',
+      '<p>Download the files below to refresh Codex credentials for this Botify instance.</p>',
+      '<ol>',
+      '<li><strong>On the Botify host:</strong> download <a href="/botifyauth.js">botifyauth.js</a> and run it with <code>node botifyauth.js</code> to receive auth uploads.</li>',
+      '<li><strong>On your local machine:</strong> run <a href="/botify_codex_inject.js">botify_codex_inject.js</a> via Node.js or <a href="/botify_codex_inject.ps1">botify_codex_inject.ps1</a> via PowerShell to push your refreshed <code>auth.json</code>.</li>',
+      '</ol>',
+      '<p>The injector will prompt for your Codex login, then stream the resulting <code>auth.json</code> back to the Botify host.</p>',
+      '</html>',
+    ];
+    return lines.join('\n');
+  }
+
+  private getAuthAssetsDir(): string {
+    const root = this.config.codexCwd || process.cwd();
+    const assetsDir = path.join(root, 'bassets');
+    ensureDirectory(assetsDir);
+    return assetsDir;
   }
 
   async getStatusReport(options?: { chatId?: string; refreshAuth?: boolean; source?: CodexAuthSource }): Promise<string> {
@@ -1343,37 +1487,28 @@ export class TelegramCodexBridge {
     }
   }
 
-  private async handleAuthAssetsCommand(chatId: string, replyToMessageId?: number): Promise<void> {
+  private async handleStartAuthCommand(chatId: string, replyToMessageId?: number): Promise<void> {
     try {
-      const root = this.config.codexCwd || process.cwd();
-      const assetsDir = path.join(root, 'bassets');
-      ensureDirectory(assetsDir);
-      const files = [
-        { file: path.join(assetsDir, 'botifyauth.js'), caption: 'botifyauth.js (WebSocket server)' },
-        { file: path.join(assetsDir, 'botify_codex_inject.js'), caption: 'botify_codex_inject.js (Node injector)' },
-        { file: path.join(assetsDir, 'botify_codex_inject.ps1'), caption: 'botify_codex_inject.ps1 (PowerShell injector)' },
-      ];
-      const missing = files.filter((entry) => !fs.existsSync(entry.file)).map((entry) => path.basename(entry.file));
-      if (missing.length) {
-        this.ensureAuthUploadAssets();
-      }
-      await this.sendText(
-        'Sending Codex auth helper scripts. Download them, run `botifyauth.js` on the Botify host, then use either inject script on your local machine.',
-        { chatId, replyToMessageId },
-      );
-      for (const entry of files) {
-        try {
-          await this.sendDocument(entry.file, { chatId, caption: entry.caption });
-        } catch (err) {
-          this.logger.error(`Failed to send asset ${entry.file}: ${(err as Error).message}`);
-          await this.sendText(`Failed to send ${path.basename(entry.file)}: ${(err as Error).message}`, {
-            chatId,
-          });
-        }
-      }
+      const info = await this.startAuthServer();
+      const urls = info.urls.length ? info.urls : [`http://localhost:${info.port}/`];
+      const instructions = [
+        'Codex auth helper server is running. Open one of the URLs below to download the helper scripts.',
+        ...urls.map((url) => `- ${url}`),
+        '',
+        'Steps:',
+        '1. On the Botify host, download `botifyauth.js` from the page and run it with `node botifyauth.js` to receive uploads.',
+        '2. On your local machine, download either `botify_codex_inject.js` or `botify_codex_inject.ps1` to push your auth.json.',
+        '3. Run the injector script; it will execute `codex login` and stream the refreshed auth file back to the server.',
+      ].join('\n');
+      await this.sendText(instructions, {
+        chatId,
+        replyToMessageId,
+        renderMode: 'pre',
+      });
     } catch (err) {
-      this.logger.error(`Failed to handle /authassets: ${(err as Error).message}`);
-      await this.sendText(`Failed to prepare auth assets: ${(err as Error).message}`, {
+      const message = (err as Error).message || 'Failed to start auth helper server.';
+      this.logger.error(`Failed to handle /startauth: ${message}`);
+      await this.sendText(`Failed to start auth helper server: ${message}`, {
         chatId,
         replyToMessageId,
       });
@@ -1527,45 +1662,6 @@ export class TelegramCodexBridge {
         this.logger.error(`Failed to send Telegram message: ${JSON.stringify(response)}`);
       }
     }
-  }
-
-  private async sendDocument(
-    filePath: string,
-    options?: { chatId?: string; caption?: string; replyToMessageId?: number },
-  ): Promise<void> {
-    const chatId = options?.chatId ?? this.config.chatId;
-    const fileName = path.basename(filePath);
-    const fileBuffer = fs.readFileSync(filePath);
-    const boundary = `botify-${Date.now()}`;
-    const parts: Array<Buffer> = [];
-    const appendField = (name: string, value: string) => {
-      parts.push(Buffer.from(`--${boundary}\r\n`));
-      parts.push(Buffer.from(`Content-Disposition: form-data; name="${name}"\r\n\r\n`));
-      parts.push(Buffer.from(`${value}\r\n`));
-    };
-    appendField('chat_id', chatId);
-    if (options?.caption) {
-      appendField('caption', options.caption);
-    }
-    if (options?.replyToMessageId) {
-      appendField('reply_to_message_id', String(options.replyToMessageId));
-      appendField('allow_sending_without_reply', 'true');
-    }
-    parts.push(Buffer.from(`--${boundary}\r\n`));
-    parts.push(
-      Buffer.from(
-        `Content-Disposition: form-data; name="document"; filename="${fileName}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
-      ),
-    );
-    parts.push(fileBuffer);
-    parts.push(Buffer.from('\r\n'));
-    parts.push(Buffer.from(`--${boundary}--\r\n`));
-    const body = Buffer.concat(parts);
-
-    await this.apiRequest('sendDocument', body, {
-      'Content-Type': `multipart/form-data; boundary=${boundary}`,
-      'Content-Length': String(body.length),
-    });
   }
 
   private async notifyOwner(message: string): Promise<void> {
