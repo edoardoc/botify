@@ -98,9 +98,9 @@ export class TelegramCodexBridge {
   private readonly timeZoneLabel: string;
   private gitInfoWarningLogged = false;
   private botUsername: string | null = null;
-  private authServer: http.Server | null = null;
-  private authServerInfo: { urls: string[]; port: number } | null = null;
-  private authServerReady: Promise<{ urls: string[]; port: number }> | null = null;
+  private embeddedServer: http.Server | null = null;
+  private embeddedServerInfo: { urls: string[]; port: number } | null = null;
+  private embeddedServerReady: Promise<{ urls: string[]; port: number }> | null = null;
   private codexAuthStatus: CodexAuthStatus = {
     state: 'unknown',
     lastCheckAt: null,
@@ -277,7 +277,7 @@ export class TelegramCodexBridge {
     this.startedAt = null;
     this.lastInteractionAt = null;
     this.running = false;
-    this.stopAuthServer();
+    this.stopEmbeddedServer();
   }
 
   private async initCodex(): Promise<void> {
@@ -504,7 +504,7 @@ export class TelegramCodexBridge {
           '/ping      – heartbeat',
           '/reset     – drop the active Codex session',
           '/status    – show server status',
-          '/startauth – launch Codex auth helper server',
+          '/startauth – launch helper web server (status + auth tools)',
           '/relive    – gracefully exit so a new build can start',
           '/help      – this message',
           '',
@@ -951,27 +951,27 @@ export class TelegramCodexBridge {
     }
   }
 
-  private async startAuthServer(): Promise<{ urls: string[]; port: number }> {
-    if (this.authServerReady) {
-      return this.authServerReady;
+  private async startEmbeddedServer(): Promise<{ urls: string[]; port: number }> {
+    if (this.embeddedServerReady) {
+      return this.embeddedServerReady;
     }
     const port = Number(process.env.BOTIFY_AUTH_HTTP_PORT || 8085);
     const host = process.env.BOTIFY_AUTH_HTTP_HOST?.trim() || '0.0.0.0';
     const assetsDir = this.getAuthAssetsDir();
     this.ensureAuthUploadAssets();
-    this.authServerReady = new Promise<{ urls: string[]; port: number }>((resolve, reject) => {
+    this.embeddedServerReady = new Promise<{ urls: string[]; port: number }>((resolve, reject) => {
       try {
-        const server = http.createServer((req, res) => this.handleAuthHttpRequest(req, res, assetsDir));
+        const server = http.createServer((req, res) => this.handleEmbeddedHttpRequest(req, res, assetsDir));
         server.on('error', (err) => {
-          if (this.authServer === server) {
-            this.stopAuthServer();
+          if (this.embeddedServer === server) {
+            this.stopEmbeddedServer();
           }
           reject(err);
         });
         server.listen(port, host, () => {
-          this.authServer = server;
-          const urls = this.computeAuthServerUrls(host, port);
-          this.authServerInfo = { urls, port };
+          this.embeddedServer = server;
+          const urls = this.computeEmbeddedServerUrls(host, port);
+          this.embeddedServerInfo = { urls, port };
           this.logger.info(`Auth helper server listening on ${host}:${port}`);
           resolve({ urls, port });
         });
@@ -979,26 +979,26 @@ export class TelegramCodexBridge {
         reject(err);
       }
     }).catch((err) => {
-      this.authServerReady = null;
+      this.embeddedServerReady = null;
       throw err;
     });
-    return this.authServerReady;
+    return this.embeddedServerReady;
   }
 
-  private stopAuthServer(): void {
-    if (this.authServer) {
+  private stopEmbeddedServer(): void {
+    if (this.embeddedServer) {
       try {
-        this.authServer.close();
+        this.embeddedServer.close();
       } catch {
         // ignore
       }
     }
-    this.authServer = null;
-    this.authServerInfo = null;
-    this.authServerReady = null;
+    this.embeddedServer = null;
+    this.embeddedServerInfo = null;
+    this.embeddedServerReady = null;
   }
 
-  private handleAuthHttpRequest(req: http.IncomingMessage, res: http.ServerResponse, assetsDir: string): void {
+  private handleEmbeddedHttpRequest(req: http.IncomingMessage, res: http.ServerResponse, assetsDir: string): void {
     try {
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
       const pathname = decodeURIComponent(url.pathname);
@@ -1008,9 +1008,22 @@ export class TelegramCodexBridge {
         return;
       }
       if (pathname === '/' || pathname === '/index.html') {
-        const html = this.renderAuthIndexHtml();
+        const html = this.renderEmbeddedIndexHtml();
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(html) });
         res.end(html);
+        return;
+      }
+      if (pathname === '/status') {
+        void this.getStatusReport()
+          .then((report) => {
+            const body = `<pre>${escapeHtml(report)}</pre>`;
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(body) });
+            res.end(body);
+          })
+          .catch((err: Error) => {
+            res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end(`Failed to render status: ${err.message}`);
+          });
         return;
       }
       const allowed = new Set(['botifyauth.js', 'botify_codex_inject.js', 'botify_codex_inject.ps1']);
@@ -1044,7 +1057,7 @@ export class TelegramCodexBridge {
     }
   }
 
-  private computeAuthServerUrls(host: string, port: number): string[] {
+  private computeEmbeddedServerUrls(host: string, port: number): string[] {
     const urls = new Set<string>();
     if (host && host !== '0.0.0.0') {
       urls.add(`http://${host}:${port}/`);
@@ -1065,15 +1078,21 @@ export class TelegramCodexBridge {
     return Array.from(urls);
   }
 
-  private renderAuthIndexHtml(): string {
+  private renderEmbeddedIndexHtml(): string {
     const lines = [
       '<!doctype html>',
       '<html lang="en">',
       '<meta charset="utf-8" />',
-      '<title>Botify Codex Auth Helpers</title>',
+      '<title>Botify Helper Server</title>',
       '<style>body{font-family:system-ui,Segoe UI,sans-serif;margin:40px;max-width:720px;}code{background:#eee;padding:2px 4px;border-radius:4px;}li{margin-bottom:10px;}</style>',
-      '<h1>Botify Codex Auth Helpers</h1>',
-      '<p>Download the files below to refresh Codex credentials for this Botify instance.</p>',
+      '<h1>Botify Helper Server</h1>',
+      '<p>This embedded server exposes useful endpoints outside Telegram:</p>',
+      '<ul>',
+      '<li><code>/</code> (this page) – download Codex helper scripts.</li>',
+      '<li><code>/status</code> – render the latest <code>/status</code> report.</li>',
+      '<li><code>/botifyauth.js</code>, <code>/botify_codex_inject.js</code>, <code>/botify_codex_inject.ps1</code> – direct file downloads.</li>',
+      '</ul>',
+      '<p>Use the workflow below to refresh Codex credentials for this Botify instance.</p>',
       '<ol>',
       '<li><strong>On the Botify host:</strong> download <a href="/botifyauth.js">botifyauth.js</a> and run it with <code>node botifyauth.js</code> to receive auth uploads.</li>',
       '<li><strong>On your local machine:</strong> run <a href="/botify_codex_inject.js">botify_codex_inject.js</a> via Node.js or <a href="/botify_codex_inject.ps1">botify_codex_inject.ps1</a> via PowerShell to push your refreshed <code>auth.json</code>.</li>',
@@ -1489,16 +1508,20 @@ export class TelegramCodexBridge {
 
   private async handleStartAuthCommand(chatId: string, replyToMessageId?: number): Promise<void> {
     try {
-      const info = await this.startAuthServer();
+      const info = await this.startEmbeddedServer();
       const urls = info.urls.length ? info.urls : [`http://localhost:${info.port}/`];
       const instructions = [
-        'Codex auth helper server is running. Open one of the URLs below to download the helper scripts.',
+        'Embedded helper server is running. Use the links below to interact with Botify outside Telegram:',
         ...urls.map((url) => `- ${url}`),
         '',
-        'Steps:',
-        '1. On the Botify host, download `botifyauth.js` from the page and run it with `node botifyauth.js` to receive uploads.',
-        '2. On your local machine, download either `botify_codex_inject.js` or `botify_codex_inject.ps1` to push your auth.json.',
-        '3. Run the injector script; it will execute `codex login` and stream the refreshed auth file back to the server.',
+        'Highlights:',
+        '• `/` – download Codex auth helper scripts (botifyauth.js + injectors).',
+        '• `/status` – view the latest /status report in your browser.',
+        '',
+        'Codex refresh steps:',
+        '1. On the Botify host, fetch `botifyauth.js` from the page and run it with `node botifyauth.js`.',
+        '2. On your workstation, download `botify_codex_inject.js` (Node) or `botify_codex_inject.ps1` (PowerShell).',
+        '3. Run the injector, follow the `codex login` prompts, and it will stream the new auth.json back automatically.',
       ].join('\n');
       await this.sendText(instructions, {
         chatId,
