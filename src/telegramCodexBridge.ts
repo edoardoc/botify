@@ -931,6 +931,11 @@ export class TelegramCodexBridge {
         fs.writeFileSync(injectorPath, buildAuthInjectorSource(), { encoding: 'utf8', mode: 0o755 });
         this.logger.info(`Auth injector scaffold created at ${injectorPath}`);
       }
+      const injectorPsPath = path.join(assetsDir, 'botify_codex_inject.ps1');
+      if (!fs.existsSync(injectorPsPath)) {
+        fs.writeFileSync(injectorPsPath, buildAuthInjectorPsSource(), { encoding: 'utf8' });
+        this.logger.info(`PowerShell injector scaffold created at ${injectorPsPath}`);
+      }
     } catch (err) {
       this.logger.warn(`Failed to prepare auth upload assets: ${(err as Error).message}`);
     }
@@ -1818,6 +1823,52 @@ function buildAuthInjectorSource(): string {
     '',
   ];
   return lines.join('\n');
+}
+
+function buildAuthInjectorPsSource(): string {
+  const lines = [
+    'Add-Type -AssemblyName PresentationFramework',
+    '$title = "Botify Codex Inject"',
+    'function Show-Info($text) { [System.Windows.MessageBox]::Show($text, $title, [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) | Out-Null }',
+    'function Show-Error($text) { [System.Windows.MessageBox]::Show($text, $title, [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null }',
+    '',
+    '$hostName = if ($env:BOTIFY_AUTH_HOST) { $env:BOTIFY_AUTH_HOST } else { Read-Host "Botify host/IP" }',
+    '$port = if ($env:BOTIFY_AUTH_PORT) { $env:BOTIFY_AUTH_PORT } else { Read-Host "Botify auth port" }',
+    'if (-not $hostName) { Show-Error "Host is required."; exit 1 }',
+    'if (-not $port) { Show-Error "Port is required."; exit 1 }',
+    '',
+    '$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else {',
+    '  $base = $env:USERPROFILE',
+    '  if (-not $base) { $base = $env:HOME }',
+    '  if (-not $base) { $base = (Get-Location).Path }',
+    '  Join-Path $base ".codex_mcp_home"',
+    '}',
+    '$authPath = Join-Path $codexHome "auth.json"',
+    '$codexBinary = if ($env:CODEX_BINARY) { $env:CODEX_BINARY } else { "codex" }',
+    '',
+    'Show-Info "This helper will run `codex login` and send auth.json to ws://$hostName:$port`nClick OK to continue."',
+    '',
+    'try {',
+    '  $process = Start-Process -FilePath $codexBinary -ArgumentList "login" -NoNewWindow -Wait -PassThru',
+    '  if ($process.ExitCode -ne 0) { throw "codex login exited with code $($process.ExitCode)" }',
+    '  if (-not (Test-Path $authPath)) { throw "auth.json not found at $authPath" }',
+    '  $payload = [System.IO.File]::ReadAllBytes($authPath)',
+    '  $uri = "ws://$hostName:$port"',
+    '  $ws = [System.Net.WebSockets.ClientWebSocket]::new()',
+    '  $cts = [System.Threading.CancellationTokenSource]::new()',
+    '  Show-Info "Connecting to $uri..."',
+    '  $ws.ConnectAsync([Uri]::new($uri), $cts.Token).GetAwaiter().GetResult()',
+    '  $segment = New-Object System.ArraySegment[byte] (, $payload)',
+    '  $ws.SendAsync($segment, [System.Net.WebSockets.WebSocketMessageType]::Binary, $true, $cts.Token).GetAwaiter().GetResult()',
+    '  $ws.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "ok", $cts.Token).GetAwaiter().GetResult()',
+    '  Show-Info "auth.json uploaded successfully."',
+    '} catch {',
+    '  Show-Error "Failed: $($_.Exception.Message)"',
+    '  exit 1',
+    '}',
+    '',
+  ];
+  return lines.join('\r\n');
 }
 
 function tokenizeCommand(command: string): string[] {
